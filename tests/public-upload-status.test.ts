@@ -57,4 +57,8 @@ describe("upload status UI contract", () => {
     expect(page).toContain("@media (max-width: 480px)");
     expect(page).toContain("เริ่มรายการใหม่");
   });
+
+  it("shows the dashboard warning only for an explicit partial-data flag", () => {
+    expect(page).toContain("$('dashboard-warning').hidden = data.partial !== true;");
+  });
 });

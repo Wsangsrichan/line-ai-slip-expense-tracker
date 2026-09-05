@@ -13,6 +13,7 @@ describe("dashboard aggregation", () => {
       row("end", "expense", 40, "2026-09-30T16:59:59Z"),
     ], now);
     expect(result.summary).toEqual({ income: 100, expense: 40, net: 60, count: 3 });
+    expect(result.partial).toBe(false);
     expect(result.daily).toEqual([{ date: "2026-09-01", income: 100, expense: 0 }, { date: "2026-09-15", income: 0, expense: 0 }, { date: "2026-09-30", income: 0, expense: 40 }]);
     expect(getBangkokMonthBounds(now).current.end.toISOString()).toBe("2026-09-30T17:00:00.000Z");
   });
