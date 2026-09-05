@@ -18,6 +18,7 @@ export interface LineWebhookDiagnostic {
   userId?: string;
   errorClass: SlipExtractionFailure["reason"];
   httpStatusClass?: SlipExtractionFailure["httpStatusClass"];
+  httpStatusCode?: SlipExtractionFailure["httpStatusCode"];
 }
 
 export interface LineWebhookLogger {
@@ -158,9 +159,13 @@ class SlipExtractionFailureError extends Error {
   }
 }
 
-function diagnosticClassification(error: unknown): Pick<LineWebhookDiagnostic, "errorClass" | "httpStatusClass"> {
+function diagnosticClassification(error: unknown): Pick<LineWebhookDiagnostic, "errorClass" | "httpStatusClass" | "httpStatusCode"> {
   if (error instanceof SlipExtractionFailureError) {
-    return { errorClass: error.failure.reason, ...(error.failure.httpStatusClass ? { httpStatusClass: error.failure.httpStatusClass } : {}) };
+    return {
+      errorClass: error.failure.reason,
+      ...(error.failure.httpStatusClass ? { httpStatusClass: error.failure.httpStatusClass } : {}),
+      ...(Number.isInteger(error.failure.httpStatusCode) ? { httpStatusCode: error.failure.httpStatusCode } : {}),
+    };
   }
   return { errorClass: "unknown" };
 }

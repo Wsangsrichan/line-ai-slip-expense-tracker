@@ -72,10 +72,25 @@ describe("slip extraction", () => {
 
     expect(result).toEqual({
       success: false, message: "บริการ AI ไม่พร้อมใช้งาน กรุณาลองใหม่",
-      reason: "provider-error", httpStatusClass: "5xx",
+      reason: "provider-error", httpStatusClass: "5xx", httpStatusCode: 503,
     });
     expect(JSON.stringify(result)).not.toContain(providerSecret);
     expect(JSON.stringify(result)).not.toContain("secret-api-key");
+  });
+
+  it.each([
+    [403, "4xx"],
+    [429, "4xx"],
+  ] as const)("maps Gemini HTTP %i to its class and exact integer status", async (status, httpStatusClass) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("provider response body", { status })));
+
+    await expect(extractSlip(new GeminiExtractor("secret-api-key"), Buffer.from("image"))).resolves.toEqual({
+      success: false,
+      message: "บริการ AI ไม่พร้อมใช้งาน กรุณาลองใหม่",
+      reason: "provider-error",
+      httpStatusClass,
+      httpStatusCode: status,
+    });
   });
 
   it("classifies schema-invalid extraction without exposing the input", async () => {

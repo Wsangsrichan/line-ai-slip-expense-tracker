@@ -11,6 +11,7 @@ export type SlipExtractionFailure = {
   message: string;
   reason: SlipExtractionFailureReason;
   httpStatusClass?: HttpStatusClass;
+  httpStatusCode?: number;
 };
 
 export type SlipExtractionResult =
@@ -18,7 +19,10 @@ export type SlipExtractionResult =
   | SlipExtractionFailure;
 
 class GeminiProviderError extends Error {
-  constructor(readonly httpStatusClass: HttpStatusClass = "unknown") {
+  constructor(
+    readonly httpStatusClass: HttpStatusClass = "unknown",
+    readonly httpStatusCode?: number,
+  ) {
     super("Gemini provider error");
   }
 }
@@ -69,7 +73,9 @@ export class GeminiExtractor implements SlipExtractor {
         }),
       },
     );
-    if (!response.ok) throw new GeminiProviderError(toHttpStatusClass(response.status));
+    if (!response.ok) {
+      throw new GeminiProviderError(toHttpStatusClass(response.status), toHttpStatusCode(response.status));
+    }
     let payload: { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
     try {
       payload = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
@@ -108,7 +114,13 @@ export async function extractSlip(extractor: SlipExtractor, image: Buffer, mimeT
       return { success: false, message: "AI ส่งข้อมูลไม่ถูกต้อง กรุณาลองใหม่", reason: "response-error" };
     }
     if (error instanceof GeminiProviderError) {
-      return { success: false, message: "บริการ AI ไม่พร้อมใช้งาน กรุณาลองใหม่", reason: "provider-error", httpStatusClass: error.httpStatusClass };
+      return {
+        success: false,
+        message: "บริการ AI ไม่พร้อมใช้งาน กรุณาลองใหม่",
+        reason: "provider-error",
+        httpStatusClass: error.httpStatusClass,
+        ...(error.httpStatusCode === undefined ? {} : { httpStatusCode: error.httpStatusCode }),
+      };
     }
     return { success: false, message: "บริการ AI ไม่พร้อมใช้งาน กรุณาลองใหม่", reason: "unknown" };
   }
@@ -116,4 +128,8 @@ export async function extractSlip(extractor: SlipExtractor, image: Buffer, mimeT
 
 function toHttpStatusClass(status: number): HttpStatusClass {
   return status >= 100 && status < 600 ? `${Math.floor(status / 100)}xx` as HttpStatusClass : "unknown";
+}
+
+function toHttpStatusCode(status: number): number | undefined {
+  return Number.isInteger(status) && status >= 100 && status < 600 ? status : undefined;
 }

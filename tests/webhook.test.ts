@@ -159,9 +159,13 @@ describe("LINE webhook", () => {
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain("payload");
   });
 
-  it("logs Gemini provider status class without leaking provider data", async () => {
+  it.each([
+    [503, "5xx"],
+    [403, "4xx"],
+    [429, "4xx"],
+  ] as const)("logs Gemini provider status class and exact status for HTTP %i without leaking provider data", async (status, httpStatusClass) => {
     const providerSecret = "gemini-response-secret";
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(providerSecret, { status: 503 })));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(providerSecret, { status })));
     const logger = { error: vi.fn() };
     const messaging = { reply: vi.fn().mockResolvedValue(undefined) };
     const response = await request(createApp({
@@ -181,7 +185,7 @@ describe("LINE webhook", () => {
     expect(messaging.reply).toHaveBeenCalledWith("reply-1", { type: "text", text: "ไม่สามารถประมวลผลสลิปได้ กรุณาลองใหม่" });
     expect(logger.error).toHaveBeenCalledWith("LINE webhook processing failed", {
       stage: "extraction", eventId: "evt-1", messageId: "message-1", userId: "line-user-1",
-      errorClass: "provider-error", httpStatusClass: "5xx",
+      errorClass: "provider-error", httpStatusClass, httpStatusCode: status,
     });
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain(providerSecret);
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain("gemini-api-key-secret");
