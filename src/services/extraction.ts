@@ -1,6 +1,7 @@
 import { extractionSchema, type SlipExtraction } from "../domain/slip.js";
 
 export const DEFAULT_GEMINI_MODEL = "gemini-3.6-flash";
+const SUPPORTED_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 class GeminiProviderError extends Error {}
 class GeminiResponseError extends Error {}
@@ -29,15 +30,22 @@ export class GeminiExtractor implements SlipExtractor {
   ) {}
 
   async extract(image: Buffer, mimeType = "image/jpeg"): Promise<unknown> {
+    const normalizedMimeType = mimeType.split(";", 1)[0].trim().toLowerCase() || "image/jpeg";
+    if (!SUPPORTED_IMAGE_MIME_TYPES.has(normalizedMimeType)) {
+      throw new GeminiProviderError("Gemini received an unsupported image MIME type");
+    }
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent?key=${encodeURIComponent(this.apiKey)}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent`,
       {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "x-goog-api-key": this.apiKey,
+        },
         body: JSON.stringify({
           contents: [{ parts: [
             { text: "อ่านภาพสลิปและคืน JSON เท่านั้น: type (income|expense), amount, payee_payer, category (อาหาร|เดินทาง|ที่พัก|ช้อปปิ้ง|บิล/สาธารณูปโภค|สุขภาพ|บันเทิง|อื่น ๆ), transaction_datetime เป็น ISO 8601 พร้อม offset, bank เป็นชื่อธนาคารถ้าอ่านได้ ถ้าไม่แน่ใจให้ใช้ อื่น ๆ" },
-            { inline_data: { mime_type: mimeType, data: image.toString("base64") } },
+            { inline_data: { mime_type: normalizedMimeType, data: image.toString("base64") } },
           ] }],
           generationConfig: { responseMimeType: "application/json" },
         }),

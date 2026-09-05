@@ -73,6 +73,29 @@ describe("slip extraction", () => {
     expect(requestBody.contents[0].parts.find((part: { inline_data?: unknown }) => part.inline_data)?.inline_data.mime_type).toBe("image/png");
   });
 
+  it("normalizes image MIME parameters and keeps the API key out of the URL", async () => {
+    const extracted = JSON.stringify({
+      type: "expense", amount: 250, payee_payer: "ร้านค้าตัวอย่าง",
+      category: "อาหาร", transaction_datetime: "2026-09-05T10:30:00+07:00",
+    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: extracted }] } }],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await extractSlip(
+      new GeminiExtractor("secret-api-key"),
+      Buffer.from("image"),
+      "IMAGE/PNG; charset=binary",
+    );
+
+    expect(result.success).toBe(true);
+    expect(fetchMock.mock.calls[0][0]).not.toContain("secret-api-key");
+    expect(fetchMock.mock.calls[0][1].headers["x-goog-api-key"]).toBe("secret-api-key");
+    const requestBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(requestBody.contents[0].parts.find((part: { inline_data?: unknown }) => part.inline_data)?.inline_data.mime_type).toBe("image/png");
+  });
+
   it("uses GEMINI_MODEL when configured without exposing the API key in source", () => {
     const extractor = createExtractor({
       GEMINI_API_KEY: "placeholder-api-key",
