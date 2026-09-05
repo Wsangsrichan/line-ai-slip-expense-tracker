@@ -21,4 +21,18 @@ describe("upload status UI contract", () => {
     expect(page).toContain("เครือข่าย");
     expect(page).toContain("response.ok");
   });
+
+  it("waits for LIFF auth before upload or save requests", () => {
+    expect(page).toContain('type="file" accept="image/jpeg,image/png,image/webp" disabled');
+    expect(page).toContain("const authReady = new Promise");
+    expect(page).toContain("await requireAuth()");
+    expect(page).toContain("finishAuth('ready', token)");
+    expect(page).toContain("window.liff.login()");
+    expect(page).not.toContain("x-line-user-id");
+
+    const uploadGuard = page.indexOf("!(await requireAuth())");
+    const uploadRequest = page.indexOf("fetch('/api/slips/extract'");
+    expect(uploadGuard).toBeGreaterThanOrEqual(0);
+    expect(uploadGuard).toBeLessThan(uploadRequest);
+  });
 });
