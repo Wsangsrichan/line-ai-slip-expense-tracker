@@ -1,5 +1,5 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { extractSlip, type SlipExtractor } from "./extraction.js";
+import { extractSlip, type SlipExtractionFailure, type SlipExtractor } from "./extraction.js";
 import { validateImageUpload } from "./upload.js";
 import type { PendingSlipStore, SlipStorage, WebhookEventStore } from "./persistence.js";
 
@@ -16,7 +16,8 @@ export interface LineWebhookDiagnostic {
   eventId?: string;
   messageId?: string;
   userId?: string;
-  errorClass: string;
+  errorClass: SlipExtractionFailure["reason"];
+  httpStatusClass?: SlipExtractionFailure["httpStatusClass"];
 }
 
 export interface LineWebhookLogger {
@@ -98,7 +99,7 @@ export function createLineWebhookProcessor(
         if (!valid.valid) throw new Error("Unsupported LINE image");
         stage = "extraction";
         const extraction = await extractSlip(dependencies.extractor, downloaded.buffer, downloaded.mimeType);
-        if (!extraction.success) throw new Error(extraction.message);
+        if (!extraction.success) throw new SlipExtractionFailureError(extraction);
         stage = "storage";
         const storageRef = await dependencies.storage.put(event.source.userId, downloaded.buffer, downloaded.mimeType);
         const contentHash = createHash("sha256").update(downloaded.buffer).digest("hex");
@@ -138,7 +139,7 @@ function logDiagnostic(logger: LineWebhookLogger, message: string, stage: string
       eventId: sanitizeDiagnosticValue(event.webhookEventId),
       messageId: sanitizeDiagnosticValue(event.message?.id),
       userId: sanitizeDiagnosticValue(event.source?.userId),
-      errorClass: errorClass(error),
+      ...diagnosticClassification(error),
     });
   } catch {
     // Diagnostics must never change the webhook's accepted response.
@@ -151,9 +152,17 @@ function sanitizeDiagnosticValue(value: string | undefined) {
   return sanitized || undefined;
 }
 
-function errorClass(error: unknown) {
-  const name = error instanceof Error ? error.constructor.name : typeof error;
-  return name.replace(/[^a-zA-Z0-9_$]/g, "?").slice(0, 64) || "UnknownError";
+class SlipExtractionFailureError extends Error {
+  constructor(readonly failure: SlipExtractionFailure) {
+    super(failure.message);
+  }
+}
+
+function diagnosticClassification(error: unknown): Pick<LineWebhookDiagnostic, "errorClass" | "httpStatusClass"> {
+  if (error instanceof SlipExtractionFailureError) {
+    return { errorClass: error.failure.reason, ...(error.failure.httpStatusClass ? { httpStatusClass: error.failure.httpStatusClass } : {}) };
+  }
+  return { errorClass: "unknown" };
 }
 
 function createPendingReply(data: Record<string, unknown>, uploadId: string, liffUrl = "") {

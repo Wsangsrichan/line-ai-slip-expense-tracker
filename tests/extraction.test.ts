@@ -27,7 +27,7 @@ describe("slip extraction", () => {
   it("classifies provider failures without returning provider details", async () => {
     const result = await extractSlip({ extract: async () => { throw new Error("provider detail with key=do-not-return"); } }, Buffer.from("image"));
 
-    expect(result).toEqual({ success: false, message: "บริการ AI ไม่พร้อมใช้งาน กรุณาลองใหม่" });
+    expect(result).toEqual({ success: false, message: "บริการ AI ไม่พร้อมใช้งาน กรุณาลองใหม่", reason: "unknown" });
     expect(JSON.stringify(result)).not.toContain("do-not-return");
   });
 
@@ -37,7 +37,7 @@ describe("slip extraction", () => {
 
     const result = await extractSlip(new GeminiExtractor("placeholder-api-key"), Buffer.from("image"));
 
-    expect(result).toEqual({ success: false, message: "AI ส่งข้อมูลไม่ถูกต้อง กรุณาลองใหม่" });
+    expect(result).toEqual({ success: false, message: "AI ส่งข้อมูลไม่ถูกต้อง กรุณาลองใหม่", reason: "response-error" });
   });
 
   it("uses the safe default model in the Gemini URL and preserves schema validation", async () => {
@@ -70,9 +70,20 @@ describe("slip extraction", () => {
       Buffer.from("image"),
     );
 
-    expect(result).toEqual({ success: false, message: "บริการ AI ไม่พร้อมใช้งาน กรุณาลองใหม่" });
+    expect(result).toEqual({
+      success: false, message: "บริการ AI ไม่พร้อมใช้งาน กรุณาลองใหม่",
+      reason: "provider-error", httpStatusClass: "5xx",
+    });
     expect(JSON.stringify(result)).not.toContain(providerSecret);
     expect(JSON.stringify(result)).not.toContain("secret-api-key");
+  });
+
+  it("classifies schema-invalid extraction without exposing the input", async () => {
+    const secret = "schema-secret-value";
+    const result = await extractSlip({ extract: async () => ({ secret, amount: -1 }) }, Buffer.from("image"));
+
+    expect(result).toEqual({ success: false, message: "ข้อมูลจาก AI ไม่ครบถ้วน กรุณาตรวจสอบและแก้ไข", reason: "schema-invalid" });
+    expect(JSON.stringify(result)).not.toContain(secret);
   });
 
   it("sends the uploaded image MIME type and finds text in any response part", async () => {

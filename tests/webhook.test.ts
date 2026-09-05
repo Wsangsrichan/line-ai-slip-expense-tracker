@@ -3,6 +3,7 @@ import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import { LineContentApiClient, LineMessagingApiClient, verifyLineSignature } from "../src/services/line-webhook.js";
+import { GeminiExtractor } from "../src/services/extraction.js";
 
 const imageEvent = {
   type: "message",
@@ -152,10 +153,39 @@ describe("LINE webhook", () => {
       type: "text", text: "ไม่สามารถประมวลผลสลิปได้ กรุณาลองใหม่",
     });
     expect(logger.error).toHaveBeenCalledWith("LINE webhook processing failed", {
-      stage, eventId: "evt-1", messageId: "message-1", userId: "line-user-1", errorClass: "Error",
+      stage, eventId: "evt-1", messageId: "message-1", userId: "line-user-1", errorClass: "unknown",
     });
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain("secret");
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain("payload");
+  });
+
+  it("logs Gemini provider status class without leaking provider data", async () => {
+    const providerSecret = "gemini-response-secret";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(providerSecret, { status: 503 })));
+    const logger = { error: vi.fn() };
+    const messaging = { reply: vi.fn().mockResolvedValue(undefined) };
+    const response = await request(createApp({
+      storage: { put: vi.fn() },
+      pendingSlips: { createPending: vi.fn(), getPending: vi.fn(), consume: vi.fn() },
+      extractor: new GeminiExtractor("gemini-api-key-secret"),
+      line: {
+        channelSecret: "channel-secret",
+        content: { download: vi.fn().mockResolvedValue({ buffer: Buffer.from("image-bytes"), mimeType: "image/jpeg" }) },
+        messaging, logger,
+      },
+    })).post("/api/line/webhook")
+      .set("x-line-signature", signatureFor({ events: [imageEvent] }))
+      .send({ events: [imageEvent] });
+
+    expect(response.body).toEqual({ accepted: true, processed: 0 });
+    expect(messaging.reply).toHaveBeenCalledWith("reply-1", { type: "text", text: "ไม่สามารถประมวลผลสลิปได้ กรุณาลองใหม่" });
+    expect(logger.error).toHaveBeenCalledWith("LINE webhook processing failed", {
+      stage: "extraction", eventId: "evt-1", messageId: "message-1", userId: "line-user-1",
+      errorClass: "provider-error", httpStatusClass: "5xx",
+    });
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain(providerSecret);
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain("gemini-api-key-secret");
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain("image-bytes");
   });
 
   it("logs pending persistence failures without leaking thrown error details", async () => {
@@ -171,7 +201,7 @@ describe("LINE webhook", () => {
       .send({ events: [imageEvent] });
 
     expect(response.body).toEqual({ accepted: true, processed: 0 });
-    expect(logger.error).toHaveBeenCalledWith("LINE webhook processing failed", expect.objectContaining({ stage: "pending-persistence", errorClass: "Error" }));
+    expect(logger.error).toHaveBeenCalledWith("LINE webhook processing failed", expect.objectContaining({ stage: "pending-persistence", errorClass: "unknown" }));
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain("database password=secret");
   });
 
@@ -187,7 +217,7 @@ describe("LINE webhook", () => {
 
     expect(response.body).toEqual({ accepted: true, processed: 0 });
     expect(logger.error).toHaveBeenCalledWith("LINE webhook processing failed", expect.objectContaining({ stage: "download" }));
-    expect(logger.error).toHaveBeenCalledWith("LINE webhook failure reply failed", expect.objectContaining({ stage: "reply-fallback", errorClass: "Error" }));
+    expect(logger.error).toHaveBeenCalledWith("LINE webhook failure reply failed", expect.objectContaining({ stage: "reply-fallback", errorClass: "unknown" }));
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain("reply-1");
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain("secret");
   });
@@ -204,7 +234,7 @@ describe("LINE webhook", () => {
       .send({ events: [imageEvent] });
 
     expect(response.body).toEqual({ accepted: true, processed: 0 });
-    expect(logger.error).toHaveBeenCalledWith("LINE webhook processing failed", expect.objectContaining({ stage: "reply", errorClass: "Error" }));
+    expect(logger.error).toHaveBeenCalledWith("LINE webhook processing failed", expect.objectContaining({ stage: "reply", errorClass: "unknown" }));
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain("reply token secret");
   });
 

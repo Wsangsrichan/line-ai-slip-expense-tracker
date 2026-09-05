@@ -3,7 +3,25 @@ import { extractionSchema, type SlipExtraction } from "../domain/slip.js";
 export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 const SUPPORTED_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
-class GeminiProviderError extends Error {}
+export type HttpStatusClass = "1xx" | "2xx" | "3xx" | "4xx" | "5xx" | "unknown";
+export type SlipExtractionFailureReason = "provider-error" | "response-error" | "schema-invalid" | "unknown";
+
+export type SlipExtractionFailure = {
+  success: false;
+  message: string;
+  reason: SlipExtractionFailureReason;
+  httpStatusClass?: HttpStatusClass;
+};
+
+export type SlipExtractionResult =
+  | { success: true; data: SlipExtraction }
+  | SlipExtractionFailure;
+
+class GeminiProviderError extends Error {
+  constructor(readonly httpStatusClass: HttpStatusClass = "unknown") {
+    super("Gemini provider error");
+  }
+}
 class GeminiResponseError extends Error {}
 
 export interface SlipExtractor {
@@ -32,7 +50,7 @@ export class GeminiExtractor implements SlipExtractor {
   async extract(image: Buffer, mimeType = "image/jpeg"): Promise<unknown> {
     const normalizedMimeType = mimeType.split(";", 1)[0].trim().toLowerCase() || "image/jpeg";
     if (!SUPPORTED_IMAGE_MIME_TYPES.has(normalizedMimeType)) {
-      throw new GeminiProviderError("Gemini received an unsupported image MIME type");
+      throw new GeminiProviderError();
     }
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent`,
@@ -51,7 +69,7 @@ export class GeminiExtractor implements SlipExtractor {
         }),
       },
     );
-    if (!response.ok) throw new GeminiProviderError("Gemini request failed");
+    if (!response.ok) throw new GeminiProviderError(toHttpStatusClass(response.status));
     let payload: { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
     try {
       payload = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
@@ -78,17 +96,24 @@ export function createExtractor(env: NodeJS.ProcessEnv = process.env): SlipExtra
     : new DummyExtractor();
 }
 
-export async function extractSlip(extractor: SlipExtractor, image: Buffer, mimeType?: string) {
+export async function extractSlip(extractor: SlipExtractor, image: Buffer, mimeType?: string): Promise<SlipExtractionResult> {
   try {
     const parsed = extractionSchema.safeParse(await extractor.extract(image, mimeType));
     if (!parsed.success) {
-      return { success: false as const, message: "ข้อมูลจาก AI ไม่ครบถ้วน กรุณาตรวจสอบและแก้ไข" };
+      return { success: false, message: "ข้อมูลจาก AI ไม่ครบถ้วน กรุณาตรวจสอบและแก้ไข", reason: "schema-invalid" };
     }
     return { success: true as const, data: parsed.data };
   } catch (error) {
     if (error instanceof GeminiResponseError) {
-      return { success: false as const, message: "AI ส่งข้อมูลไม่ถูกต้อง กรุณาลองใหม่" };
+      return { success: false, message: "AI ส่งข้อมูลไม่ถูกต้อง กรุณาลองใหม่", reason: "response-error" };
     }
-    return { success: false as const, message: "บริการ AI ไม่พร้อมใช้งาน กรุณาลองใหม่" };
+    if (error instanceof GeminiProviderError) {
+      return { success: false, message: "บริการ AI ไม่พร้อมใช้งาน กรุณาลองใหม่", reason: "provider-error", httpStatusClass: error.httpStatusClass };
+    }
+    return { success: false, message: "บริการ AI ไม่พร้อมใช้งาน กรุณาลองใหม่", reason: "unknown" };
   }
+}
+
+function toHttpStatusClass(status: number): HttpStatusClass {
+  return status >= 100 && status < 600 ? `${Math.floor(status / 100)}xx` as HttpStatusClass : "unknown";
 }
