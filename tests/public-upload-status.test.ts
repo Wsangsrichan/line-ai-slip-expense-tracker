@@ -61,4 +61,10 @@ describe("upload status UI contract", () => {
   it("shows the dashboard warning only for an explicit partial-data flag", () => {
     expect(page).toContain("$('dashboard-warning').hidden = data.partial !== true;");
   });
+
+  it("keeps native hidden elements hidden over component display rules", () => {
+    expect(page).toMatch(/\[hidden\]\s*\{\s*display:\s*none\s*!important;/);
+    expect(page).toContain('id="dashboard-loading" class="loading-skeletons"');
+    expect(page).toContain('id="dashboard-warning" class="status warning" role="alert" hidden');
+  });
 });
