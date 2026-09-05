@@ -47,4 +47,27 @@ describe("persistence wiring", () => {
       direction: "expense",
     });
   });
+
+  it("stores pending slip metadata and claims webhook events durably", async () => {
+    const pendingSingle = vi.fn().mockResolvedValue({ data: { id: "pending-id" }, error: null });
+    const eventSingle = vi.fn().mockResolvedValue({ data: { event_id: "event-id" }, error: null });
+    const client = {
+      from: vi.fn((table: string) => table === "pending_slips"
+        ? { insert: vi.fn().mockReturnValue({ select: vi.fn().mockReturnValue({ single: pendingSingle }) }) }
+        : { insert: vi.fn().mockReturnValue({ select: vi.fn().mockReturnValue({ single: eventSingle }) }) }),
+    } as unknown as SupabaseClient;
+    const { SupabasePersistence } = await import("../src/services/persistence.js");
+    const persistence = new SupabasePersistence(client);
+
+    await persistence.createPending("user-a", "user-a/slip", "hash", {
+      eventId: "event-id", messageId: "message-id", extraction: {
+        type: "expense", amount: 100, payee_payer: "ร้านค้า", category: "อาหาร",
+        transaction_datetime: "2026-09-05T10:30:00+07:00", bank: "Other Bank",
+      },
+    });
+    await persistence.claim("event-id", "user-a", "message-id");
+
+    expect(client.from).toHaveBeenCalledWith("pending_slips");
+    expect(client.from).toHaveBeenCalledWith("webhook_events");
+  });
 });

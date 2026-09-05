@@ -7,7 +7,8 @@ import { createExtractor, extractSlip } from "./services/extraction.js";
 import { DummyIdentityVerifier, LineApiIdentityVerifier, getLineUserId } from "./services/identity.js";
 import { validateImageUpload } from "./services/upload.js";
 import { aggregateDashboard, getBangkokMonthBounds } from "./services/dashboard.js";
-import { createSupabasePersistence, DUPLICATE_SLIP_ERROR_CODE, DUPLICATE_SLIP_ERROR_MESSAGE, DummyPendingSlipStore, DummySlipStorage, DummyTransactionRepository, SignedPendingSlipStore, type PendingSlipStore, type SlipStorage, type TransactionRepository } from "./services/persistence.js";
+import { createSupabasePersistence, DUPLICATE_SLIP_ERROR_CODE, DUPLICATE_SLIP_ERROR_MESSAGE, DummyPendingSlipStore, DummySlipStorage, DummyTransactionRepository, DummyWebhookEventStore, SignedPendingSlipStore, type PendingSlipStore, type SlipStorage, type TransactionRepository, type WebhookEventStore } from "./services/persistence.js";
+import { createLineWebhookProcessor, LineContentApiClient, LineMessagingApiClient, verifyLineSignature, type LineContentClient, type LineMessagingClient } from "./services/line-webhook.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -15,6 +16,15 @@ export interface AppDependencies {
   transactionRepository?: TransactionRepository;
   storage?: SlipStorage;
   pendingSlips?: PendingSlipStore;
+  events?: WebhookEventStore;
+  extractor?: ReturnType<typeof createExtractor>;
+  line?: { channelSecret: string; content: LineContentClient; messaging: LineMessagingClient; liffUrl?: string };
+}
+
+declare global {
+  namespace Express {
+    interface Request { rawBody?: Buffer }
+  }
 }
 
 export function createApp(dependencies: AppDependencies = {}) {
@@ -25,13 +35,16 @@ export function createApp(dependencies: AppDependencies = {}) {
     ? new SignedPendingSlipStore(process.env.UPLOAD_SIGNING_KEY)
     : process.env.VERCEL === "1" ? null : new DummyPendingSlipStore());
   const transactionRepository = dependencies.transactionRepository ?? supabase ?? new DummyTransactionRepository();
+  const events = dependencies.events ?? supabase ?? new DummyWebhookEventStore();
   // Real LINE verification is the safe default. Dummy identity is available
   // only when explicitly requested for local development and tests.
   const identityVerifier = process.env.LINE_AUTH_MODE === "dummy"
     ? new DummyIdentityVerifier()
     : new LineApiIdentityVerifier();
-  const extractor = createExtractor();
-  app.use(express.json({ limit: "100kb" }));
+  const extractor = dependencies.extractor ?? createExtractor();
+  app.use(express.json({ limit: "100kb", verify: (request, _response, buffer) => {
+    (request as typeof request & { rawBody?: Buffer }).rawBody = Buffer.from(buffer);
+  } }));
   app.get("/", (_request, response) => response.sendFile("index.html", {
     root: path.join(process.cwd(), "public"),
   }));
@@ -44,6 +57,22 @@ export function createApp(dependencies: AppDependencies = {}) {
     next();
   });
   app.get("/api/health", (_request, response) => response.json({ ok: true }));
+
+  const lineConfig = dependencies.line ?? (process.env.LINE_CHANNEL_SECRET && process.env.LINE_CHANNEL_ACCESS_TOKEN
+    ? {
+      channelSecret: process.env.LINE_CHANNEL_SECRET,
+      content: new LineContentApiClient(process.env.LINE_CHANNEL_ACCESS_TOKEN),
+      messaging: new LineMessagingApiClient(process.env.LINE_CHANNEL_ACCESS_TOKEN),
+      liffUrl: process.env.LIFF_URL,
+    }
+    : undefined);
+  app.post("/api/line/webhook", async (request, response) => {
+    if (!lineConfig || !request.rawBody || !verifyLineSignature(request.rawBody, request.header("x-line-signature"), lineConfig.channelSecret)) {
+      return response.status(lineConfig ? 401 : 503).json({ error: lineConfig ? "invalid signature" : "LINE webhook is not configured" });
+    }
+    const processWebhook = createLineWebhookProcessor(lineConfig, { storage, pendingSlips: pendingSlips ?? new DummyPendingSlipStore(), events, extractor });
+    return response.json(await processWebhook(request.body as { events?: unknown[] }));
+  });
 
   app.get("/api/dashboard", async (request, response) => {
     const userId = await getLineUserId(identityVerifier, {

@@ -21,9 +21,19 @@ export interface PendingSlip {
   contentHash: string;
 }
 
+export interface PendingSlipMetadata {
+  eventId?: string;
+  messageId?: string;
+  extraction?: SlipExtraction;
+}
+
 export interface PendingSlipStore {
-  createPending(userId: string, storageRef: string, contentHash: string): Promise<string>;
+  createPending(userId: string, storageRef: string, contentHash: string, metadata?: PendingSlipMetadata): Promise<string>;
   consume(userId: string, uploadId: string): Promise<PendingSlip | null>;
+}
+
+export interface WebhookEventStore {
+  claim(eventId: string, userId: string, messageId: string): Promise<boolean>;
 }
 
 export class DummySlipStorage implements SlipStorage {
@@ -52,7 +62,7 @@ export class DummyTransactionRepository implements TransactionRepository {
 export class DummyPendingSlipStore implements PendingSlipStore {
   private readonly pending = new Map<string, { userId: string; storageRef: string; contentHash: string }>();
 
-  async createPending(userId: string, storageRef: string, contentHash: string) {
+  async createPending(userId: string, storageRef: string, contentHash: string, _metadata?: PendingSlipMetadata) {
     const uploadId = crypto.randomUUID();
     this.pending.set(uploadId, { userId, storageRef, contentHash });
     return uploadId;
@@ -63,6 +73,15 @@ export class DummyPendingSlipStore implements PendingSlipStore {
     if (!item || item.userId !== userId) return null;
     this.pending.delete(uploadId);
     return { storageRef: item.storageRef, contentHash: item.contentHash };
+  }
+}
+
+export class DummyWebhookEventStore implements WebhookEventStore {
+  private readonly eventIds = new Set<string>();
+  async claim(eventId: string) {
+    if (this.eventIds.has(eventId)) return false;
+    this.eventIds.add(eventId);
+    return true;
   }
 }
 
@@ -137,14 +156,26 @@ export class SupabasePersistence implements SlipStorage, TransactionRepository, 
     return (result.data ?? []) as DashboardTransaction[];
   }
 
-  async createPending(userId: string, storageRef: string, contentHash: string) {
+  async createPending(userId: string, storageRef: string, contentHash: string, metadata?: PendingSlipMetadata) {
     const result = await this.client.from("pending_slips").insert({
       line_user_id: userId,
       storage_ref: storageRef,
       content_hash: contentHash,
+      line_event_id: metadata?.eventId ?? null,
+      line_message_id: metadata?.messageId ?? null,
+      extraction: metadata?.extraction ?? null,
     }).select("id").single();
     if (result.error) throw result.error;
     return result.data.id as string;
+  }
+
+  async claim(eventId: string, userId: string, messageId: string) {
+    const result = await this.client.from("webhook_events").insert({
+      event_id: eventId, line_user_id: userId, line_message_id: messageId,
+    }).select("event_id").single();
+    if (!result.error) return true;
+    if ((result.error as { code?: string }).code === DUPLICATE_SLIP_ERROR_CODE) return false;
+    throw result.error;
   }
 
   async consume(userId: string, uploadId: string) {
