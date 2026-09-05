@@ -13,7 +13,7 @@ describe("Capture-to-Verify API", () => {
     const response = await request(createApp()).get("/");
 
     expect(response.status).toBe(200);
-    expect(response.text).toContain("ตรวจสอบข้อมูลสลิป");
+    expect(response.text).toContain("บันทึกรายการจากสลิป");
   });
 
   it("accepts the path shape used by a Vercel catch-all function", async () => {

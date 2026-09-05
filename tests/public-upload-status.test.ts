@@ -8,9 +8,9 @@ describe("upload status UI contract", () => {
     for (const state of ["idle", "uploading", "processing", "success", "error"]) {
       expect(page).toContain(`data-state=\"${state}\"`);
     }
-    expect(page).toContain("กำลังอัปโหลดภาพสลิป");
-    expect(page).toContain("กำลังอ่านข้อมูลด้วย AI");
-    expect(page).toContain("บันทึกข้อมูลสำเร็จ");
+    expect(page).toContain("กำลังอัปโหลดสลิป");
+    expect(page).toContain("กำลังอ่านข้อมูลสลิป");
+    expect(page).toContain("บันทึกเรียบร้อย");
     expect(page).toContain("ลองใหม่");
   });
 
@@ -45,5 +45,16 @@ describe("upload status UI contract", () => {
     expect(page).toContain("response.status === 401");
     expect(page).toContain("เซสชัน LINE หมดอายุ");
     expect(page).not.toContain("authorization: `Bearer ${lineAccessToken}`");
+  });
+
+  it("makes the first-time workflow and dashboard boundaries explicit", () => {
+    expect(page).toContain('aria-label="ขั้นตอนการบันทึกรายการ"');
+    expect(page).toContain("เลือกรูปสลิปเพื่อเริ่มต้น");
+    expect(page).toContain("รองรับไฟล์ JPG, PNG และ WEBP");
+    expect(page).toContain('aria-labelledby="workflow-title"');
+    expect(page).toContain('aria-labelledby="dashboard-title"');
+    expect(page).toContain("Dashboard ประจำเดือน");
+    expect(page).toContain("@media (max-width: 480px)");
+    expect(page).toContain("เริ่มรายการใหม่");
   });
 });
