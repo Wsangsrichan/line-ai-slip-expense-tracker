@@ -94,7 +94,12 @@ export class SupabasePersistence implements SlipStorage, TransactionRepository, 
   async create(userId: string, data: SlipExtraction & { slip_image_url: string }) {
     const result = await this.client.from("transactions").insert({
       line_user_id: userId,
-      ...data,
+      type: data.type,
+      amount: data.amount,
+      payee_payer: data.payee_payer,
+      category: data.category,
+      transaction_datetime: data.transaction_datetime,
+      slip_image_url: data.slip_image_url,
     }).select("id").single();
     if (result.error) throw result.error;
     return result.data as { id: string };
