@@ -29,6 +29,23 @@ describe("dashboard aggregation", () => {
     ]));
   });
 
+  it("accepts production-like Supabase rows with numeric amounts and nullable direction", () => {
+    const result = aggregateDashboard([{ id: "3f7e5b2e-6c79-4cf9-9c8f-4c9bb2e1a111", type: "expense", direction: null, amount: "250.00", category: "อาหาร", transaction_datetime: "2026-09-05T10:30:00+07:00" }], new Date("2026-09-10T00:00:00+07:00"));
+
+    expect(result.partial).toBe(false);
+    expect(result.summary).toEqual({ income: 0, expense: 250, net: -250, count: 1 });
+  });
+
+  it("ignores malformed rows outside the current and previous dashboard periods", () => {
+    const result = aggregateDashboard([
+      row("current", "expense", 20, "2026-09-05T00:00:00+07:00"),
+      { ...row("old-bad", "expense", 30, "2026-07-05T00:00:00+07:00"), amount: "not-a-number" },
+    ], new Date("2026-09-10T00:00:00+07:00"));
+
+    expect(result.partial).toBe(false);
+    expect(result.summary.expense).toBe(20);
+  });
+
   it("does not invent comparison percentages", () => {
     const noPrevious = aggregateDashboard([row("a", "income", 10, "2026-09-05T00:00:00+07:00")], new Date("2026-09-10T00:00:00+07:00"));
     expect(noPrevious.comparison.values.income).toEqual({ absolute: null, percentage: null });

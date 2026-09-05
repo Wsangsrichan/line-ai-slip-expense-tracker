@@ -44,8 +44,15 @@ export function aggregateDashboard(transactions: DashboardTransaction[], now: Da
     const time = new Date(transaction.transaction_datetime).getTime();
     return time >= bounds.start.getTime() && time < bounds.end.getTime();
   };
-  const valid = transactions.filter((transaction) => transaction.id && Number.isFinite(amountOf(transaction)) && amountOf(transaction) >= 0 && !Number.isNaN(new Date(transaction.transaction_datetime).getTime()));
-  const partial = valid.length !== transactions.length;
+  const isInDashboardRange = (transaction: DashboardTransaction) => {
+    const time = new Date(transaction.transaction_datetime).getTime();
+    // An invalid timestamp cannot prove that a row is outside the requested
+    // range, so keep it visible as a partial-data warning.
+    return Number.isNaN(time) || inPeriod(transaction, current) || inPeriod(transaction, previous);
+  };
+  const scopedTransactions = transactions.filter(isInDashboardRange);
+  const valid = scopedTransactions.filter((transaction) => transaction.id && Number.isFinite(amountOf(transaction)) && amountOf(transaction) >= 0 && !Number.isNaN(new Date(transaction.transaction_datetime).getTime()));
+  const partial = valid.length !== scopedTransactions.length;
   const rows = valid.filter((transaction) => inPeriod(transaction, current));
   const previousRows = valid.filter((transaction) => inPeriod(transaction, previous));
   const summarize = (items: DashboardTransaction[]) => {
