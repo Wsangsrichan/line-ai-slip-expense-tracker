@@ -30,8 +30,9 @@ declare global {
 export function createApp(dependencies: AppDependencies = {}) {
   const app = express();
   const supabase = createSupabasePersistence();
-  const storage = dependencies.storage ?? supabase ?? new DummySlipStorage();
-  const pendingSlips = dependencies.pendingSlips ?? supabase ?? (process.env.UPLOAD_SIGNING_KEY
+  const isProduction = process.env.NODE_ENV === "production";
+  const storage = dependencies.storage ?? supabase ?? (isProduction ? null : new DummySlipStorage());
+  const pendingSlips = dependencies.pendingSlips ?? supabase ?? (isProduction ? null : process.env.UPLOAD_SIGNING_KEY
     ? new SignedPendingSlipStore(process.env.UPLOAD_SIGNING_KEY)
     : process.env.VERCEL === "1" ? null : new DummyPendingSlipStore());
   const transactionRepository = dependencies.transactionRepository ?? supabase ?? new DummyTransactionRepository();
@@ -70,7 +71,8 @@ export function createApp(dependencies: AppDependencies = {}) {
     if (!lineConfig || !request.rawBody || !verifyLineSignature(request.rawBody, request.header("x-line-signature"), lineConfig.channelSecret)) {
       return response.status(lineConfig ? 401 : 503).json({ error: lineConfig ? "invalid signature" : "LINE webhook is not configured" });
     }
-    const processWebhook = createLineWebhookProcessor(lineConfig, { storage, pendingSlips: pendingSlips ?? new DummyPendingSlipStore(), events, extractor });
+    if (!storage || !pendingSlips) return response.status(503).json({ error: "ระบบยังไม่ได้ตั้งค่า durable upload storage" });
+    const processWebhook = createLineWebhookProcessor(lineConfig, { storage, pendingSlips, events, extractor });
     return response.json(await processWebhook(request.body as { events?: unknown[] }));
   });
 
@@ -103,7 +105,7 @@ export function createApp(dependencies: AppDependencies = {}) {
 
     const result = await extractSlip(extractor, request.file.buffer, request.file.mimetype);
     if (!result.success) return response.status(422).json({ error: result.message });
-    if (!pendingSlips) return response.status(503).json({ error: "ระบบยังไม่ได้ตั้งค่า durable upload storage" });
+    if (!storage || !pendingSlips) return response.status(503).json({ error: "ระบบยังไม่ได้ตั้งค่า durable upload storage" });
     const contentHash = createHash("sha256").update(request.file.buffer).digest("hex");
     try {
       const storageRef = await storage.put(userId, request.file.buffer, request.file.mimetype);

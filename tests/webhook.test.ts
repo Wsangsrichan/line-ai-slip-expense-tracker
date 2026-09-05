@@ -13,6 +13,35 @@ const imageEvent = {
 };
 
 describe("LINE webhook", () => {
+  it("returns 503 in production when durable storage is unavailable", async () => {
+    const previousEnv = {
+      NODE_ENV: process.env.NODE_ENV,
+      SUPABASE_URL: process.env.SUPABASE_URL,
+      SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
+    };
+    process.env.NODE_ENV = "production";
+    delete process.env.SUPABASE_URL;
+    delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const content = { download: vi.fn() };
+
+    try {
+      const response = await request(createApp({
+        line: { channelSecret: "channel-secret", content, messaging: { reply: vi.fn() } },
+      })).post("/api/line/webhook")
+        .set("x-line-signature", signatureFor({ events: [imageEvent] }))
+        .send({ events: [imageEvent] });
+
+      expect(response.status).toBe(503);
+      expect(response.body).toEqual({ error: "ระบบยังไม่ได้ตั้งค่า durable upload storage" });
+      expect(content.download).not.toHaveBeenCalled();
+    } finally {
+      for (const [key, value] of Object.entries(previousEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it("downloads LINE content with the server-side access token", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response("bytes", {
       status: 200, headers: { "content-type": "image/png" },
