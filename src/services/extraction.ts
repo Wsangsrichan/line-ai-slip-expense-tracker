@@ -1,6 +1,6 @@
 import { extractionSchema, type SlipExtraction } from "../domain/slip.js";
 
-export const DEFAULT_GEMINI_MODEL = "gemini-3.6-flash";
+export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 const SUPPORTED_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 class GeminiProviderError extends Error {}
