@@ -23,9 +23,11 @@ export function createApp(dependencies: AppDependencies = {}) {
     ? new SignedPendingSlipStore(process.env.UPLOAD_SIGNING_KEY)
     : process.env.VERCEL === "1" ? null : new DummyPendingSlipStore());
   const transactionRepository = dependencies.transactionRepository ?? supabase ?? new DummyTransactionRepository();
-  const identityVerifier = process.env.LINE_AUTH_MODE === "real"
-    ? new LineApiIdentityVerifier()
-    : new DummyIdentityVerifier();
+  // Real LINE verification is the safe default. Dummy identity is available
+  // only when explicitly requested for local development and tests.
+  const identityVerifier = process.env.LINE_AUTH_MODE === "dummy"
+    ? new DummyIdentityVerifier()
+    : new LineApiIdentityVerifier();
   const extractor = createExtractor();
   app.use(express.json({ limit: "100kb" }));
   app.get("/", (_request, response) => response.sendFile("index.html", {
