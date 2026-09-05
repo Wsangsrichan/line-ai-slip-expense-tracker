@@ -1,0 +1,5 @@
+oracle: marine-kraken-oracle
+oracle-repo: https://github.com/marine-org/marine-kraken-oracle.git
+date: 2026-09-05
+mode: default
+source: https://github.com/Wsangsrichan/line-ai-slip-expense-tracker
