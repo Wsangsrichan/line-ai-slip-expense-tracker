@@ -1,5 +1,7 @@
 import { extractionSchema, type SlipExtraction } from "../domain/slip.js";
 
+export const DEFAULT_GEMINI_MODEL = "gemini-3.6-flash";
+
 export interface SlipExtractor {
   extract(image: Buffer): Promise<unknown>;
 }
@@ -18,11 +20,14 @@ export class DummyExtractor implements SlipExtractor {
 }
 
 export class GeminiExtractor implements SlipExtractor {
-  constructor(private readonly apiKey: string) {}
+  constructor(
+    private readonly apiKey: string,
+    private readonly model = DEFAULT_GEMINI_MODEL,
+  ) {}
 
   async extract(image: Buffer): Promise<unknown> {
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(this.apiKey)}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent?key=${encodeURIComponent(this.apiKey)}`,
       {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -45,7 +50,10 @@ export class GeminiExtractor implements SlipExtractor {
 
 export function createExtractor(env: NodeJS.ProcessEnv = process.env): SlipExtractor {
   return env.GEMINI_API_KEY && env.GEMINI_API_KEY !== "replace-me"
-    ? new GeminiExtractor(env.GEMINI_API_KEY)
+    ? new GeminiExtractor(
+      env.GEMINI_API_KEY,
+      env.GEMINI_MODEL?.trim() || DEFAULT_GEMINI_MODEL,
+    )
     : new DummyExtractor();
 }
 
