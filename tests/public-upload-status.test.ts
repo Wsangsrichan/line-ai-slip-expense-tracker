@@ -26,13 +26,24 @@ describe("upload status UI contract", () => {
     expect(page).toContain('type="file" accept="image/jpeg,image/png,image/webp" disabled');
     expect(page).toContain("const authReady = new Promise");
     expect(page).toContain("await requireAuth()");
-    expect(page).toContain("finishAuth('ready', token)");
+    expect(page).toContain("finishAuth('authenticated')");
     expect(page).toContain("window.liff.login()");
     expect(page).not.toContain("x-line-user-id");
 
-    const uploadGuard = page.indexOf("!(await requireAuth())");
+    const uploadGuard = page.indexOf("const token = await requireAuth();");
     const uploadRequest = page.indexOf("fetch('/api/slips/extract'");
     expect(uploadGuard).toBeGreaterThanOrEqual(0);
     expect(uploadGuard).toBeLessThan(uploadRequest);
+  });
+
+  it("refreshes login state and access token immediately before API calls", () => {
+    expect(page).toContain("const getFreshAccessToken = async () =>");
+    expect(page).toContain("if (!window.liff || !window.liff.isLoggedIn()) return null");
+    expect(page).toContain("const token = window.liff.getAccessToken();");
+    expect(page).toContain("authorization: `Bearer ${token}`");
+    expect(page).toContain("await getFreshAccessToken()");
+    expect(page).toContain("response.status === 401");
+    expect(page).toContain("เซสชัน LINE หมดอายุ");
+    expect(page).not.toContain("authorization: `Bearer ${lineAccessToken}`");
   });
 });
