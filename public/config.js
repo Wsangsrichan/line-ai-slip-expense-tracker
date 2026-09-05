@@ -1,4 +1,4 @@
-// Demo-only identity placeholder. Do not use it in real LINE mode.
+// Public LIFF configuration.
 window.APP_CONFIG = {
-  dummyUserId: "replace-with-local-dummy-user-id",
+  liffId: "2011459743-AVxRSBMO",
 };
