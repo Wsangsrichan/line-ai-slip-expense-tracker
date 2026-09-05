@@ -30,6 +30,7 @@ describe("persistence wiring", () => {
       category: "อาหารและเครื่องดื่ม",
       transaction_datetime: "2026-09-05T10:30:00+07:00",
       slip_image_url: "user-a/slip-id",
+      slip_content_sha256: "hash-a",
       bank: "SCB",
     });
 
@@ -42,6 +43,7 @@ describe("persistence wiring", () => {
       category: "อาหารและเครื่องดื่ม",
       transaction_datetime: "2026-09-05T10:30:00+07:00",
       slip_image_url: "user-a/slip-id",
+      slip_content_sha256: "hash-a",
     });
   });
 });

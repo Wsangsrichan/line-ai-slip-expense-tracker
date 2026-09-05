@@ -1,11 +1,12 @@
 import express from "express";
 import multer from "multer";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { validateForSave } from "./domain/slip.js";
 import { createExtractor, extractSlip } from "./services/extraction.js";
 import { DummyIdentityVerifier, LineApiIdentityVerifier, getLineUserId } from "./services/identity.js";
 import { validateImageUpload } from "./services/upload.js";
-import { createSupabasePersistence, DummyPendingSlipStore, DummySlipStorage, DummyTransactionRepository, SignedPendingSlipStore, type PendingSlipStore, type SlipStorage, type TransactionRepository } from "./services/persistence.js";
+import { createSupabasePersistence, DUPLICATE_SLIP_ERROR_CODE, DUPLICATE_SLIP_ERROR_MESSAGE, DummyPendingSlipStore, DummySlipStorage, DummyTransactionRepository, SignedPendingSlipStore, type PendingSlipStore, type SlipStorage, type TransactionRepository } from "./services/persistence.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -57,9 +58,10 @@ export function createApp(dependencies: AppDependencies = {}) {
     const result = await extractSlip(extractor, request.file.buffer);
     if (!result.success) return response.status(422).json({ error: result.message });
     if (!pendingSlips) return response.status(503).json({ error: "ระบบยังไม่ได้ตั้งค่า durable upload storage" });
+    const contentHash = createHash("sha256").update(request.file.buffer).digest("hex");
     try {
       const storageRef = await storage.put(userId, request.file.buffer, request.file.mimetype);
-      const uploadId = await pendingSlips.createPending(userId, storageRef);
+      const uploadId = await pendingSlips.createPending(userId, storageRef, contentHash);
       return response.json({ user_id: userId, upload_id: uploadId, data: result.data });
     } catch {
       return response.status(503).json({ error: "ไม่สามารถเก็บภาพสลิปได้ กรุณาลองใหม่" });
@@ -90,15 +92,19 @@ export function createApp(dependencies: AppDependencies = {}) {
       return response.status(422).json({ error: "กรุณาอัปโหลดภาพสลิปก่อนบันทึก" });
     }
     if (!pendingSlips) return response.status(503).json({ error: "ระบบยังไม่ได้ตั้งค่า durable upload storage" });
-    const storageRef = await pendingSlips.consume(userId, request.body.upload_id);
-    if (!storageRef) return response.status(404).json({ error: "ไม่พบภาพสลิปหรือภาพนี้ไม่ใช่ของผู้ใช้" });
+    const pendingSlip = await pendingSlips.consume(userId, request.body.upload_id);
+    if (!pendingSlip) return response.status(404).json({ error: "ไม่พบภาพสลิปหรือภาพนี้ไม่ใช่ของผู้ใช้" });
     try {
       const transaction = await transactionRepository.create(userId, {
         ...result.data,
-        slip_image_url: storageRef,
+        slip_image_url: pendingSlip.storageRef,
+        slip_content_sha256: pendingSlip.contentHash,
       });
       return response.status(201).json({ saved: true, transaction });
-    } catch {
+    } catch (error) {
+      if ((error as { code?: string }).code === DUPLICATE_SLIP_ERROR_CODE) {
+        return response.status(409).json({ error: DUPLICATE_SLIP_ERROR_MESSAGE });
+      }
       return response.status(503).json({ error: "ไม่สามารถบันทึกรายการได้ กรุณาลองใหม่" });
     }
   });

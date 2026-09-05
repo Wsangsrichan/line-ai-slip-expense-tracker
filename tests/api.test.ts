@@ -109,4 +109,42 @@ describe("Capture-to-Verify API", () => {
       .set("x-line-user-id", "dummy-user").send(data);
     expect(foreignUpload.status).toBe(404);
   });
+
+  it("rejects the same image bytes for the same LINE user", async () => {
+    const app = createApp();
+    const image = Buffer.from("same-slip-bytes");
+    const upload = await request(app).post("/api/slips/extract").set("x-line-user-id", "same-user")
+      .attach("slip", image, "slip.jpg");
+    const data = { ...upload.body.data, upload_id: upload.body.upload_id };
+    expect((await request(app).post("/api/transactions").set("x-line-user-id", "same-user").send(data)).status).toBe(201);
+
+    const retryUpload = await request(app).post("/api/slips/extract").set("x-line-user-id", "same-user")
+      .attach("slip", image, "renamed.jpg");
+    const retry = await request(app).post("/api/transactions").set("x-line-user-id", "same-user")
+      .send({ ...retryUpload.body.data, upload_id: retryUpload.body.upload_id });
+    expect(retry.status).toBe(409);
+    expect(retry.body.error).toBe("สลิปภาพนี้ถูกบันทึกไปแล้ว ไม่สามารถบันทึกซ้ำได้");
+  });
+
+  it("allows the same image bytes for a different LINE user", async () => {
+    const app = createApp();
+    const image = Buffer.from("shared-slip-bytes");
+    const uploads = await Promise.all(["user-a", "user-b"].map((userId) => request(app).post("/api/slips/extract")
+      .set("x-line-user-id", userId).attach("slip", image, "slip.jpg")));
+    const responses = await Promise.all(uploads.map((upload, index) => request(app).post("/api/transactions")
+      .set("x-line-user-id", index === 0 ? "user-a" : "user-b")
+      .send({ ...upload.body.data, upload_id: upload.body.upload_id })));
+    expect(responses.map((response) => response.status)).toEqual([201, 201]);
+  });
+
+  it("allows only one concurrent save for two uploads of the same image", async () => {
+    const app = createApp();
+    const image = Buffer.from("concurrent-slip-bytes");
+    const uploads = await Promise.all(["a.jpg", "b.jpg"].map((filename) => request(app).post("/api/slips/extract")
+      .set("x-line-user-id", "race-user").attach("slip", image, filename)));
+    const responses = await Promise.all(uploads.map((upload) => request(app).post("/api/transactions")
+      .set("x-line-user-id", "race-user")
+      .send({ ...upload.body.data, upload_id: upload.body.upload_id })));
+    expect(responses.map((response) => response.status).sort()).toEqual([201, 409]);
+  });
 });

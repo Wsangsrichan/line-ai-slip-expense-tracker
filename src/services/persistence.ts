@@ -2,17 +2,25 @@ import type { SlipExtraction } from "../domain/slip.js";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { createHmac, timingSafeEqual } from "node:crypto";
 
+export const DUPLICATE_SLIP_ERROR_CODE = "23505";
+export const DUPLICATE_SLIP_ERROR_MESSAGE = "สลิปภาพนี้ถูกบันทึกไปแล้ว ไม่สามารถบันทึกซ้ำได้";
+
 export interface SlipStorage {
   put(userId: string, image: Buffer, contentType: string): Promise<string>;
 }
 
 export interface TransactionRepository {
-  create(userId: string, data: SlipExtraction & { slip_image_url: string }): Promise<{ id: string }>;
+  create(userId: string, data: SlipExtraction & { slip_image_url: string; slip_content_sha256: string }): Promise<{ id: string }>;
+}
+
+export interface PendingSlip {
+  storageRef: string;
+  contentHash: string;
 }
 
 export interface PendingSlipStore {
-  createPending(userId: string, storageRef: string): Promise<string>;
-  consume(userId: string, uploadId: string): Promise<string | null>;
+  createPending(userId: string, storageRef: string, contentHash: string): Promise<string>;
+  consume(userId: string, uploadId: string): Promise<PendingSlip | null>;
 }
 
 export class DummySlipStorage implements SlipStorage {
@@ -22,17 +30,26 @@ export class DummySlipStorage implements SlipStorage {
 }
 
 export class DummyTransactionRepository implements TransactionRepository {
-  async create(_userId: string, _data: SlipExtraction & { slip_image_url: string }) {
+  private readonly savedHashes = new Set<string>();
+
+  async create(userId: string, data: SlipExtraction & { slip_image_url: string; slip_content_sha256: string }) {
+    const key = `${userId}\u0000${data.slip_content_sha256}`;
+    if (this.savedHashes.has(key)) {
+      const error = new Error(DUPLICATE_SLIP_ERROR_MESSAGE) as Error & { code: string };
+      error.code = DUPLICATE_SLIP_ERROR_CODE;
+      throw error;
+    }
+    this.savedHashes.add(key);
     return { id: "00000000-0000-4000-8000-000000000001" };
   }
 }
 
 export class DummyPendingSlipStore implements PendingSlipStore {
-  private readonly pending = new Map<string, { userId: string; storageRef: string }>();
+  private readonly pending = new Map<string, { userId: string; storageRef: string; contentHash: string }>();
 
-  async createPending(userId: string, storageRef: string) {
+  async createPending(userId: string, storageRef: string, contentHash: string) {
     const uploadId = crypto.randomUUID();
-    this.pending.set(uploadId, { userId, storageRef });
+    this.pending.set(uploadId, { userId, storageRef, contentHash });
     return uploadId;
   }
 
@@ -40,17 +57,18 @@ export class DummyPendingSlipStore implements PendingSlipStore {
     const item = this.pending.get(uploadId);
     if (!item || item.userId !== userId) return null;
     this.pending.delete(uploadId);
-    return item.storageRef;
+    return { storageRef: item.storageRef, contentHash: item.contentHash };
   }
 }
 
 export class SignedPendingSlipStore implements PendingSlipStore {
   constructor(private readonly signingKey: string, private readonly ttlMs = 15 * 60 * 1000) {}
 
-  async createPending(userId: string, storageRef: string) {
+  async createPending(userId: string, storageRef: string, contentHash: string) {
     const payload = Buffer.from(JSON.stringify({
       userId,
       storageRef,
+      contentHash,
       expiresAt: Date.now() + this.ttlMs,
     })).toString("base64url");
     return `${payload}.${this.sign(payload)}`;
@@ -61,10 +79,10 @@ export class SignedPendingSlipStore implements PendingSlipStore {
     if (!payload || !signature || !this.isValidSignature(payload, signature)) return null;
     try {
       const data = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
-        userId?: string; storageRef?: string; expiresAt?: number;
+        userId?: string; storageRef?: string; contentHash?: string; expiresAt?: number;
       };
-      if (data.userId !== userId || !data.storageRef || !data.expiresAt || data.expiresAt < Date.now()) return null;
-      return data.storageRef;
+      if (data.userId !== userId || !data.storageRef || !data.contentHash || !data.expiresAt || data.expiresAt < Date.now()) return null;
+      return { storageRef: data.storageRef, contentHash: data.contentHash };
     } catch {
       return null;
     }
@@ -91,7 +109,7 @@ export class SupabasePersistence implements SlipStorage, TransactionRepository, 
     return path;
   }
 
-  async create(userId: string, data: SlipExtraction & { slip_image_url: string }) {
+  async create(userId: string, data: SlipExtraction & { slip_image_url: string; slip_content_sha256: string }) {
     const result = await this.client.from("transactions").insert({
       line_user_id: userId,
       type: data.type,
@@ -100,15 +118,17 @@ export class SupabasePersistence implements SlipStorage, TransactionRepository, 
       category: data.category,
       transaction_datetime: data.transaction_datetime,
       slip_image_url: data.slip_image_url,
+      slip_content_sha256: data.slip_content_sha256,
     }).select("id").single();
     if (result.error) throw result.error;
     return result.data as { id: string };
   }
 
-  async createPending(userId: string, storageRef: string) {
+  async createPending(userId: string, storageRef: string, contentHash: string) {
     const result = await this.client.from("pending_slips").insert({
       line_user_id: userId,
       storage_ref: storageRef,
+      content_hash: contentHash,
     }).select("id").single();
     if (result.error) throw result.error;
     return result.data.id as string;
@@ -116,9 +136,12 @@ export class SupabasePersistence implements SlipStorage, TransactionRepository, 
 
   async consume(userId: string, uploadId: string) {
     const result = await this.client.from("pending_slips").delete()
-      .eq("id", uploadId).eq("line_user_id", userId).select("storage_ref").single();
+      .eq("id", uploadId).eq("line_user_id", userId).select("storage_ref,content_hash").single();
     if (result.error) return null;
-    return result.data.storage_ref as string;
+    return {
+      storageRef: result.data.storage_ref as string,
+      contentHash: result.data.content_hash as string,
+    };
   }
 }
 
