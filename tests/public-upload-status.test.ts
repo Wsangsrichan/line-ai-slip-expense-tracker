@@ -47,6 +47,14 @@ describe("upload status UI contract", () => {
     expect(page).not.toContain("authorization: `Bearer ${lineAccessToken}`");
   });
 
+  it("refreshes the dashboard after saving a transaction", () => {
+    const saveSuccess = page.indexOf("setStatus('success', 'บันทึกเรียบร้อย'");
+    const dashboardRefresh = page.indexOf("await loadDashboard();", saveSuccess);
+
+    expect(saveSuccess).toBeGreaterThanOrEqual(0);
+    expect(dashboardRefresh).toBeGreaterThan(saveSuccess);
+  });
+
   it("makes the first-time workflow and dashboard boundaries explicit", () => {
     expect(page).toContain('aria-label="ขั้นตอนการบันทึกรายการ"');
     expect(page).toContain("เลือกรูปสลิปเพื่อเริ่มต้น");
