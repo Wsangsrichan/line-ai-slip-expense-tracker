@@ -12,7 +12,7 @@ export class DummyExtractor implements SlipExtractor {
       type: "expense",
       amount: 250,
       payee_payer: "ร้านค้าตัวอย่าง",
-      category: "อาหารและเครื่องดื่ม",
+      category: "อาหาร",
       transaction_datetime: "2026-09-05T10:30:00+07:00",
       bank: "Other Bank",
     };
@@ -33,7 +33,7 @@ export class GeminiExtractor implements SlipExtractor {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           contents: [{ parts: [
-            { text: "อ่านภาพสลิปและคืน JSON เท่านั้น: type (income|expense), amount, payee_payer, category (อาหารและเครื่องดื่ม|เดินทาง|ช้อปปิ้ง|บิลและสาธารณูปโภค|เงินเดือน/รายได้|โอนเงิน|อื่น ๆ), transaction_datetime เป็น ISO 8601 พร้อม offset, bank เป็นชื่อธนาคารถ้าอ่านได้ รองรับ KBank, UOB, Bangkok Bank, SCB, KTB, GHB และธนาคารอื่น" },
+            { text: "อ่านภาพสลิปและคืน JSON เท่านั้น: type (income|expense), amount, payee_payer, category (อาหาร|เดินทาง|ที่พัก|ช้อปปิ้ง|บิล/สาธารณูปโภค|สุขภาพ|บันเทิง|อื่น ๆ), transaction_datetime เป็น ISO 8601 พร้อม offset, bank เป็นชื่อธนาคารถ้าอ่านได้ ถ้าไม่แน่ใจให้ใช้ อื่น ๆ" },
             { inline_data: { mime_type: "image/jpeg", data: image.toString("base64") } },
           ] }],
           generationConfig: { responseMimeType: "application/json" },

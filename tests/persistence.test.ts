@@ -27,7 +27,7 @@ describe("persistence wiring", () => {
       type: "expense",
       amount: 250,
       payee_payer: "ร้านค้าตัวอย่าง",
-      category: "อาหารและเครื่องดื่ม",
+      category: "อาหาร",
       transaction_datetime: "2026-09-05T10:30:00+07:00",
       slip_image_url: "user-a/slip-id",
       slip_content_sha256: "hash-a",
@@ -40,10 +40,11 @@ describe("persistence wiring", () => {
       type: "expense",
       amount: 250,
       payee_payer: "ร้านค้าตัวอย่าง",
-      category: "อาหารและเครื่องดื่ม",
+      category: "อาหาร",
       transaction_datetime: "2026-09-05T10:30:00+07:00",
       slip_image_url: "user-a/slip-id",
       slip_content_sha256: "hash-a",
+      direction: "expense",
     });
   });
 });

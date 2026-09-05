@@ -11,7 +11,10 @@ export interface SlipStorage {
 
 export interface TransactionRepository {
   create(userId: string, data: SlipExtraction & { slip_image_url: string; slip_content_sha256: string }): Promise<{ id: string }>;
+  listForDashboard(userId: string, start: Date, end: Date, previousStart: Date): Promise<DashboardTransaction[]>;
 }
+
+import type { DashboardTransaction } from "./dashboard.js";
 
 export interface PendingSlip {
   storageRef: string;
@@ -42,6 +45,8 @@ export class DummyTransactionRepository implements TransactionRepository {
     this.savedHashes.add(key);
     return { id: "00000000-0000-4000-8000-000000000001" };
   }
+
+  async listForDashboard(_userId: string, _start: Date, _end: Date, _previousStart: Date) { return [] as DashboardTransaction[]; }
 }
 
 export class DummyPendingSlipStore implements PendingSlipStore {
@@ -119,9 +124,17 @@ export class SupabasePersistence implements SlipStorage, TransactionRepository, 
       transaction_datetime: data.transaction_datetime,
       slip_image_url: data.slip_image_url,
       slip_content_sha256: data.slip_content_sha256,
+      direction: data.type,
     }).select("id").single();
     if (result.error) throw result.error;
     return result.data as { id: string };
+  }
+
+  async listForDashboard(userId: string, _start: Date, _end: Date, previousStart: Date) {
+    const result = await this.client.from("transactions").select("id,type,direction,amount,category,transaction_datetime")
+      .eq("line_user_id", userId).gte("transaction_datetime", previousStart.toISOString()).lt("transaction_datetime", _end.toISOString());
+    if (result.error) throw result.error;
+    return (result.data ?? []) as DashboardTransaction[];
   }
 
   async createPending(userId: string, storageRef: string, contentHash: string) {

@@ -6,6 +6,7 @@ import { validateForSave } from "./domain/slip.js";
 import { createExtractor, extractSlip } from "./services/extraction.js";
 import { DummyIdentityVerifier, LineApiIdentityVerifier, getLineUserId } from "./services/identity.js";
 import { validateImageUpload } from "./services/upload.js";
+import { aggregateDashboard, getBangkokMonthBounds } from "./services/dashboard.js";
 import { createSupabasePersistence, DUPLICATE_SLIP_ERROR_CODE, DUPLICATE_SLIP_ERROR_MESSAGE, DummyPendingSlipStore, DummySlipStorage, DummyTransactionRepository, SignedPendingSlipStore, type PendingSlipStore, type SlipStorage, type TransactionRepository } from "./services/persistence.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -43,6 +44,22 @@ export function createApp(dependencies: AppDependencies = {}) {
     next();
   });
   app.get("/api/health", (_request, response) => response.json({ ok: true }));
+
+  app.get("/api/dashboard", async (request, response) => {
+    const userId = await getLineUserId(identityVerifier, {
+      token: request.headers.authorization,
+      dummyUserId: request.headers["x-line-user-id"] as string | undefined,
+    });
+    if (!userId) return response.status(401).json({ error: "ต้องเข้าสู่ระบบ LINE ก่อนใช้งาน" });
+    const now = new Date();
+    const bounds = getBangkokMonthBounds(now);
+    try {
+      const transactions = await transactionRepository.listForDashboard(userId, bounds.current.start, bounds.current.end, bounds.previous.start);
+      return response.json({ state: "complete", data: aggregateDashboard(transactions, now) });
+    } catch {
+      return response.status(503).json({ state: "recoverable-error", error: "ไม่สามารถโหลดข้อมูล Dashboard ได้ กรุณาลองใหม่" });
+    }
+  });
 
   app.post("/api/slips/extract", upload.single("slip"), async (request, response) => {
     const userId = await getLineUserId(identityVerifier, {
