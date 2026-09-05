@@ -8,7 +8,7 @@ import { DummyIdentityVerifier, LineApiIdentityVerifier, getLineUserId } from ".
 import { validateImageUpload } from "./services/upload.js";
 import { aggregateDashboard, getBangkokMonthBounds } from "./services/dashboard.js";
 import { createSupabasePersistence, DUPLICATE_SLIP_ERROR_CODE, DUPLICATE_SLIP_ERROR_MESSAGE, DummyPendingSlipStore, DummySlipStorage, DummyTransactionRepository, DummyWebhookEventStore, SignedPendingSlipStore, type PendingSlipStore, type SlipStorage, type TransactionRepository, type WebhookEventStore } from "./services/persistence.js";
-import { createLineWebhookProcessor, LineContentApiClient, LineMessagingApiClient, verifyLineSignature, type LineContentClient, type LineMessagingClient } from "./services/line-webhook.js";
+import { createLineWebhookProcessor, LineContentApiClient, LineMessagingApiClient, verifyLineSignature, type LineContentClient, type LineMessagingClient, type LineWebhookLogger } from "./services/line-webhook.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -18,7 +18,7 @@ export interface AppDependencies {
   pendingSlips?: PendingSlipStore;
   events?: WebhookEventStore;
   extractor?: ReturnType<typeof createExtractor>;
-  line?: { channelSecret: string; content: LineContentClient; messaging: LineMessagingClient; liffUrl?: string };
+  line?: { channelSecret: string; content: LineContentClient; messaging: LineMessagingClient; liffUrl?: string; logger?: LineWebhookLogger };
 }
 
 declare global {

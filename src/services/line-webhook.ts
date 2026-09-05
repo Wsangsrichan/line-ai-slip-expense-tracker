@@ -11,11 +11,24 @@ export interface LineMessagingClient {
   reply(replyToken: string, message: Record<string, unknown>): Promise<void>;
 }
 
+export interface LineWebhookDiagnostic {
+  stage: string;
+  eventId?: string;
+  messageId?: string;
+  userId?: string;
+  errorClass: string;
+}
+
+export interface LineWebhookLogger {
+  error(message: string, diagnostic: LineWebhookDiagnostic): void;
+}
+
 export interface LineWebhookConfig {
   channelSecret: string;
   content: LineContentClient;
   messaging: LineMessagingClient;
   liffUrl?: string;
+  logger?: LineWebhookLogger;
 }
 
 interface ImageEvent {
@@ -64,33 +77,83 @@ export function createLineWebhookProcessor(
   config: LineWebhookConfig,
   dependencies: { storage: SlipStorage; pendingSlips: PendingSlipStore; events: WebhookEventStore; extractor: SlipExtractor },
 ) {
+  const logger = config.logger ?? console;
   return async function process(body: { events?: unknown[] }) {
     let processed = 0;
     for (const candidate of body.events ?? []) {
       const event = candidate as ImageEvent;
       if (event.type !== "message" || event.message?.type !== "image" || !event.source?.userId || !event.message.id) continue;
-      if (event.webhookEventId && !(await dependencies.events.claim(event.webhookEventId, event.source.userId, event.message.id))) continue;
+      let stage = "claim";
       try {
+        if (event.webhookEventId && !(await dependencies.events.claim(event.webhookEventId, event.source.userId, event.message.id))) continue;
+      } catch (error) {
+        logDiagnostic(logger, "LINE webhook processing failed", stage, event, error);
+        continue;
+      }
+      try {
+        stage = "download";
         const downloaded = await config.content.download(event.message.id);
+        stage = "validation";
         const valid = validateImageUpload(downloaded.mimeType, downloaded.buffer.byteLength);
         if (!valid.valid) throw new Error("Unsupported LINE image");
+        stage = "extraction";
         const extraction = await extractSlip(dependencies.extractor, downloaded.buffer, downloaded.mimeType);
-        if (!extraction.success) throw new Error("Slip extraction failed");
+        if (!extraction.success) throw new Error(extraction.message);
+        stage = "storage";
         const storageRef = await dependencies.storage.put(event.source.userId, downloaded.buffer, downloaded.mimeType);
         const contentHash = createHash("sha256").update(downloaded.buffer).digest("hex");
+        stage = "pending-persistence";
         const uploadId = await dependencies.pendingSlips.createPending(event.source.userId, storageRef, contentHash, {
           eventId: event.webhookEventId,
           messageId: event.message.id,
           extraction: extraction.data,
         });
-        if (event.replyToken) await config.messaging.reply(event.replyToken, createPendingReply(extraction.data, uploadId, config.liffUrl));
+        if (event.replyToken) {
+          stage = "reply";
+          await config.messaging.reply(event.replyToken, createPendingReply(extraction.data, uploadId, config.liffUrl));
+        }
         processed += 1;
-      } catch {
-        // Webhook responses never expose provider errors or credentials.
+      } catch (error) {
+        logDiagnostic(logger, "LINE webhook processing failed", stage, event, error);
+        if (event.replyToken && stage !== "reply") {
+          try {
+            await config.messaging.reply(event.replyToken, {
+              type: "text",
+              text: "ไม่สามารถประมวลผลสลิปได้ กรุณาลองใหม่",
+            });
+          } catch (replyError) {
+            logDiagnostic(logger, "LINE webhook failure reply failed", "reply-fallback", event, replyError);
+          }
+        }
       }
     }
     return { accepted: true, processed };
   };
+}
+
+function logDiagnostic(logger: LineWebhookLogger, message: string, stage: string, event: ImageEvent, error: unknown) {
+  try {
+    logger.error(message, {
+      stage: sanitizeDiagnosticValue(stage) ?? "unknown",
+      eventId: sanitizeDiagnosticValue(event.webhookEventId),
+      messageId: sanitizeDiagnosticValue(event.message?.id),
+      userId: sanitizeDiagnosticValue(event.source?.userId),
+      errorClass: errorClass(error),
+    });
+  } catch {
+    // Diagnostics must never change the webhook's accepted response.
+  }
+}
+
+function sanitizeDiagnosticValue(value: string | undefined) {
+  if (!value) return undefined;
+  const sanitized = value.replace(/[^a-zA-Z0-9._:-]/g, "?").slice(0, 64);
+  return sanitized || undefined;
+}
+
+function errorClass(error: unknown) {
+  const name = error instanceof Error ? error.constructor.name : typeof error;
+  return name.replace(/[^a-zA-Z0-9_$]/g, "?").slice(0, 64) || "UnknownError";
 }
 
 function createPendingReply(data: Record<string, unknown>, uploadId: string, liffUrl = "") {
