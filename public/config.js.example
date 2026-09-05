@@ -1,0 +1,5 @@
+// Copy to config.js for local demo only. Do not put secrets here.
+window.APP_CONFIG = {
+  liffId: "replace-with-liff-id",
+  dummyUserId: "replace-with-dummy-user-id",
+};

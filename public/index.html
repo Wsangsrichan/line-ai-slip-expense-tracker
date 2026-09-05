@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="th">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ตรวจสอบสลิป</title>
+    <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+    <style>
+      :root { font-family: system-ui, sans-serif; color: #1f2937; background: #f7f9fa; }
+      body { margin: 0; padding: 16px; } main { max-width: 520px; margin: auto; }
+      .card { background: white; border-radius: 16px; padding: 16px; box-shadow: 0 2px 12px #0000000d; }
+      label { display: block; margin: 12px 0 6px; font-weight: 600; } input, select { width: 100%; box-sizing: border-box; padding: 12px; border: 1px solid #e5e7eb; border-radius: 12px; font-size: 16px; }
+      button { width: 100%; margin-top: 18px; padding: 14px; border: 0; border-radius: 12px; background: #06c755; color: white; font-size: 16px; font-weight: 700; } button:disabled { opacity: .5; }
+      #preview { width: 100%; max-height: 240px; object-fit: contain; border-radius: 12px; background: #f7f9fa; } #status { min-height: 24px; }
+    </style>
+  </head>
+  <body><main>
+    <h1>ตรวจสอบข้อมูลสลิป</h1>
+    <div class="card">
+      <p id="status">เลือกภาพสลิปเพื่อเริ่มต้น</p>
+      <input id="file" type="file" accept="image/jpeg,image/png,image/webp" />
+      <img id="preview" alt="ภาพสลิปตัวอย่าง" hidden />
+      <form id="verify" hidden>
+        <label for="type">ประเภท</label><select id="type"><option value="expense">รายจ่าย</option><option value="income">รายรับ</option></select>
+        <label for="amount">จำนวนเงิน</label><input id="amount" type="number" min="0.01" step="0.01" required />
+        <label for="payee_payer">ผู้รับ/ผู้โอน</label><input id="payee_payer" required />
+        <label for="category">หมวดหมู่</label><select id="category" required>
+          <option>อาหารและเครื่องดื่ม</option><option>เดินทาง</option><option>ช้อปปิ้ง</option><option>บิลและสาธารณูปโภค</option><option>เงินเดือน/รายได้</option><option>โอนเงิน</option><option>อื่น ๆ</option>
+        </select>
+        <label for="transaction_datetime">วันเวลา</label><input id="transaction_datetime" type="datetime-local" required />
+        <button id="save" type="submit" disabled>บันทึกข้อมูล</button>
+      </form>
+    </div>
+  </main><script src="/config.js"></script><script>
+    const $ = (id) => document.getElementById(id);
+    const config = window.APP_CONFIG || {};
+    const dummyUserId = config.dummyUserId;
+    let lineAccessToken;
+    let uploadId;
+    const authHeaders = () => {
+      const headers = {};
+      if (lineAccessToken) headers.authorization = `Bearer ${lineAccessToken}`;
+      else if (dummyUserId) headers['x-line-user-id'] = dummyUserId;
+      return headers;
+    };
+    (async () => {
+      if (!config.liffId || config.liffId.startsWith('replace-') || !window.liff) return;
+      try {
+        await window.liff.init({ liffId: config.liffId });
+        if (!window.liff.isLoggedIn()) window.liff.login();
+        lineAccessToken = window.liff.getAccessToken();
+      } catch { setStatus('ไม่สามารถเข้าสู่ระบบ LINE ได้'); }
+    })();
+    const required = ['amount', 'payee_payer', 'category', 'transaction_datetime'];
+    const setStatus = (message) => $('status').textContent = message;
+    const syncSave = () => $('save').disabled = required.some((id) => !$(`${id}`).value.trim());
+    required.forEach((id) => $(`${id}`).addEventListener('input', syncSave));
+    $('file').addEventListener('change', async (event) => {
+      const file = event.target.files[0]; if (!file) return;
+      $('preview').src = URL.createObjectURL(file); $('preview').hidden = false; setStatus('กำลังอ่านข้อมูลสลิป…');
+      const body = new FormData(); body.append('slip', file);
+      const response = await fetch('/api/slips/extract', { method: 'POST', headers: authHeaders(), body });
+      const payload = await response.json(); if (!response.ok) return setStatus(payload.error || 'เกิดข้อผิดพลาด');
+      uploadId = payload.upload_id; const data = payload.data; $('type').value = data.type; $('amount').value = data.amount; $('payee_payer').value = data.payee_payer; $('category').value = data.category; $('transaction_datetime').value = data.transaction_datetime.slice(0, 16); $('verify').hidden = false; syncSave(); setStatus('ตรวจสอบข้อมูลก่อนบันทึก');
+    });
+    $('verify').addEventListener('submit', async (event) => {
+      event.preventDefault(); syncSave(); if ($('save').disabled) return setStatus('กรุณากรอกข้อมูลสำคัญให้ครบ');
+      setStatus('กำลังบันทึก…'); const headers = { ...authHeaders(), 'content-type': 'application/json' }; const response = await fetch('/api/transactions', { method: 'POST', headers, body: JSON.stringify({ upload_id: uploadId, type: $('type').value, amount: Number($('amount').value), payee_payer: $('payee_payer').value, category: $('category').value, transaction_datetime: new Date($('transaction_datetime').value).toISOString() }) });
+      const payload = await response.json(); setStatus(response.ok ? 'บันทึกข้อมูลสำเร็จ' : (payload.errors?.map((e) => e.message).join(', ') || payload.error || 'ข้อมูลไม่ถูกต้อง'));
+    });
+  </script></body>
+</html>
