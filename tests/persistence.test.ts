@@ -1,8 +1,23 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { createSupabasePersistence } from "../src/services/persistence.js";
+import { createSupabasePersistence, DummyPendingSlipStore, SignedPendingSlipStore } from "../src/services/persistence.js";
 
 describe("persistence wiring", () => {
+  it("previews pending extraction without consuming and consumes only once", async () => {
+    const store = new DummyPendingSlipStore();
+    const id = await store.createPending("user-a", "slip", "hash", { extraction: { type: "expense", amount: 1, payee_payer: "ร้านค้า", category: "อาหาร", transaction_datetime: "2026-09-05T10:30:00+07:00" } });
+    expect((await store.getPending("user-a", id))?.extraction?.amount).toBe(1);
+    expect(await store.consume("user-a", id)).toEqual(expect.objectContaining({ storageRef: "slip", contentHash: "hash", extraction: expect.objectContaining({ amount: 1 }) }));
+    expect(await store.consume("user-a", id)).toBeNull();
+  });
+
+  it("rejects tampered signed IDs and consumes valid IDs once", async () => {
+    const store = new SignedPendingSlipStore("test-key");
+    const id = await store.createPending("user-a", "slip", "hash");
+    expect(await store.getPending("user-a", `${id}tampered`)).toBeNull();
+    expect(await store.consume("user-a", id)).toEqual({ storageRef: "slip", contentHash: "hash" });
+    expect(await store.consume("user-a", id)).toBeNull();
+  });
   it("selects Supabase persistence only when both required env values exist", () => {
     expect(createSupabasePersistence({})).toBeNull();
     expect(createSupabasePersistence({

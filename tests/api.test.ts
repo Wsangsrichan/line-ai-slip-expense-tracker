@@ -1,6 +1,7 @@
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
+import { DummyPendingSlipStore } from "../src/services/persistence.js";
 
 afterEach(() => {
   process.env.LINE_AUTH_MODE = "dummy";
@@ -10,6 +11,33 @@ afterEach(() => {
 });
 
 describe("Capture-to-Verify API", () => {
+  it("previews an owned pending slip without consuming it", async () => {
+    const pendingSlips = new DummyPendingSlipStore();
+    const uploadId = await pendingSlips.createPending("preview-user", "preview/slip", "hash", {
+      extraction: { type: "expense", amount: 99, payee_payer: "ร้านค้า", category: "อาหาร", transaction_datetime: "2026-09-05T10:30:00+07:00" },
+    });
+    const app = createApp({ pendingSlips });
+
+    const preview = await request(app).get(`/api/slips/pending/${uploadId}`).set("x-line-user-id", "preview-user");
+    expect(preview.status).toBe(200);
+    expect(preview.body).toEqual({ upload_id: uploadId, data: expect.objectContaining({ amount: 99 }) });
+    expect((await request(app).get(`/api/slips/pending/${uploadId}`).set("x-line-user-id", "preview-user")).status).toBe(200);
+  });
+
+  it("does not reveal pending slips for another user, missing IDs, or expired IDs", async () => {
+    const pendingSlips = new DummyPendingSlipStore();
+    const uploadId = await pendingSlips.createPending("owner", "slip", "hash");
+    const app = createApp({ pendingSlips });
+    expect((await request(app).get(`/api/slips/pending/${uploadId}`).set("x-line-user-id", "intruder")).status).toBe(404);
+    expect((await request(app).get("/api/slips/pending/not-a-real-id").set("x-line-user-id", "owner")).status).toBe(404);
+    expect((await request(app).get("/api/slips/pending/").set("x-line-user-id", "owner")).status).toBe(404);
+    const expired = new DummyPendingSlipStore(0);
+    const expiredId = await expired.createPending("owner", "slip", "hash", {
+      extraction: { type: "expense", amount: 1, payee_payer: "ร้านค้า", category: "อาหาร", transaction_datetime: "2026-09-05T10:30:00+07:00" },
+    });
+    expect((await request(createApp({ pendingSlips: expired })).get(`/api/slips/pending/${expiredId}`).set("x-line-user-id", "owner")).status).toBe(404);
+  });
+
   it("serves the LIFF app at the root path", async () => {
     const response = await request(createApp()).get("/");
 
@@ -128,6 +156,18 @@ describe("Capture-to-Verify API", () => {
     const foreignUpload = await request(createApp()).post("/api/transactions")
       .set("x-line-user-id", "dummy-user").send(data);
     expect(foreignUpload.status).toBe(404);
+  });
+
+  it("keeps a pending slip when transaction persistence fails", async () => {
+    const pendingSlips = new DummyPendingSlipStore();
+    const transactionRepository = { create: vi.fn().mockRejectedValue(new Error("temporary")), listForDashboard: vi.fn().mockResolvedValue([]) };
+    const uploadId = await pendingSlips.createPending("retry-user", "slip", "hash", {
+      extraction: { type: "expense", amount: 10, payee_payer: "ร้านค้า", category: "อาหาร", transaction_datetime: "2026-09-05T10:30:00+07:00" },
+    });
+    const app = createApp({ pendingSlips, transactionRepository });
+    const body = { type: "expense", amount: 10, payee_payer: "ร้านค้า", category: "อาหาร", transaction_datetime: "2026-09-05T10:30:00+07:00", upload_id: uploadId };
+    expect((await request(app).post("/api/transactions").set("x-line-user-id", "retry-user").send(body)).status).toBe(503);
+    expect((await request(app).get(`/api/slips/pending/${uploadId}`).set("x-line-user-id", "retry-user")).status).toBe(200);
   });
 
   it("rejects the same image bytes for the same LINE user", async () => {

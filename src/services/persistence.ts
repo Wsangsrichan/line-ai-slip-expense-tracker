@@ -1,4 +1,5 @@
 import type { SlipExtraction } from "../domain/slip.js";
+import { extractionSchema } from "../domain/slip.js";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { createHmac, timingSafeEqual } from "node:crypto";
 
@@ -19,6 +20,7 @@ import type { DashboardTransaction } from "./dashboard.js";
 export interface PendingSlip {
   storageRef: string;
   contentHash: string;
+  extraction?: SlipExtraction;
 }
 
 export interface PendingSlipMetadata {
@@ -29,6 +31,7 @@ export interface PendingSlipMetadata {
 
 export interface PendingSlipStore {
   createPending(userId: string, storageRef: string, contentHash: string, metadata?: PendingSlipMetadata): Promise<string>;
+  getPending(userId: string, uploadId: string): Promise<PendingSlip | null>;
   consume(userId: string, uploadId: string): Promise<PendingSlip | null>;
 }
 
@@ -60,19 +63,26 @@ export class DummyTransactionRepository implements TransactionRepository {
 }
 
 export class DummyPendingSlipStore implements PendingSlipStore {
-  private readonly pending = new Map<string, { userId: string; storageRef: string; contentHash: string }>();
+  private readonly pending = new Map<string, { userId: string; storageRef: string; contentHash: string; extraction?: SlipExtraction; expiresAt: number }>();
+  constructor(private readonly ttlMs = 15 * 60 * 1000) {}
 
   async createPending(userId: string, storageRef: string, contentHash: string, _metadata?: PendingSlipMetadata) {
     const uploadId = crypto.randomUUID();
-    this.pending.set(uploadId, { userId, storageRef, contentHash });
+    this.pending.set(uploadId, { userId, storageRef, contentHash, extraction: _metadata?.extraction, expiresAt: Date.now() + this.ttlMs });
     return uploadId;
+  }
+
+  async getPending(userId: string, uploadId: string) {
+    const item = this.pending.get(uploadId);
+    if (!item || item.userId !== userId || item.expiresAt <= Date.now()) return null;
+    return { storageRef: item.storageRef, contentHash: item.contentHash, extraction: item.extraction };
   }
 
   async consume(userId: string, uploadId: string) {
     const item = this.pending.get(uploadId);
-    if (!item || item.userId !== userId) return null;
+    if (!item || item.userId !== userId || item.expiresAt <= Date.now()) return null;
     this.pending.delete(uploadId);
-    return { storageRef: item.storageRef, contentHash: item.contentHash };
+    return { storageRef: item.storageRef, contentHash: item.contentHash, extraction: item.extraction };
   }
 }
 
@@ -86,30 +96,44 @@ export class DummyWebhookEventStore implements WebhookEventStore {
 }
 
 export class SignedPendingSlipStore implements PendingSlipStore {
+  private readonly consumed = new Set<string>();
   constructor(private readonly signingKey: string, private readonly ttlMs = 15 * 60 * 1000) {}
 
-  async createPending(userId: string, storageRef: string, contentHash: string) {
+  async createPending(userId: string, storageRef: string, contentHash: string, metadata?: PendingSlipMetadata) {
     const payload = Buffer.from(JSON.stringify({
       userId,
       storageRef,
       contentHash,
+      extraction: metadata?.extraction,
       expiresAt: Date.now() + this.ttlMs,
     })).toString("base64url");
     return `${payload}.${this.sign(payload)}`;
   }
 
+  async getPending(userId: string, uploadId: string) {
+    const data = this.parse(userId, uploadId);
+    return data ? { storageRef: data.storageRef, contentHash: data.contentHash, extraction: data.extraction } : null;
+  }
+
   async consume(userId: string, uploadId: string) {
+    if (this.consumed.has(uploadId)) return null;
+    const data = this.parse(userId, uploadId);
+    if (!data) return null;
+    this.consumed.add(uploadId);
+    return { storageRef: data.storageRef, contentHash: data.contentHash, extraction: data.extraction };
+  }
+
+  private parse(userId: string, uploadId: string) {
     const [payload, signature] = uploadId.split(".");
     if (!payload || !signature || !this.isValidSignature(payload, signature)) return null;
     try {
       const data = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
-        userId?: string; storageRef?: string; contentHash?: string; expiresAt?: number;
+        userId?: string; storageRef?: string; contentHash?: string; expiresAt?: number; extraction?: unknown;
       };
-      if (data.userId !== userId || !data.storageRef || !data.contentHash || !data.expiresAt || data.expiresAt < Date.now()) return null;
-      return { storageRef: data.storageRef, contentHash: data.contentHash };
-    } catch {
-      return null;
-    }
+      const extraction = extractionSchema.safeParse(data.extraction);
+      if (data.userId !== userId || !data.storageRef || !data.contentHash || !data.expiresAt || data.expiresAt <= Date.now()) return null;
+      return { storageRef: data.storageRef, contentHash: data.contentHash, extraction: extraction.success ? extraction.data : undefined };
+    } catch { return null; }
   }
 
   private sign(payload: string) {
@@ -161,12 +185,21 @@ export class SupabasePersistence implements SlipStorage, TransactionRepository, 
       line_user_id: userId,
       storage_ref: storageRef,
       content_hash: contentHash,
+      expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
       line_event_id: metadata?.eventId ?? null,
       line_message_id: metadata?.messageId ?? null,
       extraction: metadata?.extraction ?? null,
     }).select("id").single();
     if (result.error) throw result.error;
     return result.data.id as string;
+  }
+
+  async getPending(userId: string, uploadId: string) {
+    const result = await this.client.from("pending_slips").select("storage_ref,content_hash,extraction")
+      .eq("id", uploadId).eq("line_user_id", userId).gt("expires_at", new Date().toISOString()).maybeSingle();
+    if (result.error || !result.data) return null;
+    const extraction = extractionSchema.safeParse(result.data.extraction);
+    return { storageRef: result.data.storage_ref as string, contentHash: result.data.content_hash as string, extraction: extraction.success ? extraction.data : undefined };
   }
 
   async claim(eventId: string, userId: string, messageId: string) {
@@ -180,11 +213,12 @@ export class SupabasePersistence implements SlipStorage, TransactionRepository, 
 
   async consume(userId: string, uploadId: string) {
     const result = await this.client.from("pending_slips").delete()
-      .eq("id", uploadId).eq("line_user_id", userId).select("storage_ref,content_hash").single();
+      .eq("id", uploadId).eq("line_user_id", userId).gt("expires_at", new Date().toISOString()).select("storage_ref,content_hash,extraction").single();
     if (result.error) return null;
     return {
       storageRef: result.data.storage_ref as string,
       contentHash: result.data.content_hash as string,
+      extraction: extractionSchema.safeParse(result.data.extraction).success ? extractionSchema.parse(result.data.extraction) : undefined,
     };
   }
 }

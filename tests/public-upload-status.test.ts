@@ -55,6 +55,13 @@ describe("upload status UI contract", () => {
     expect(dashboardRefresh).toBeGreaterThan(saveSuccess);
   });
 
+  it("hydrates the verification form from an upload_id in the LIFF URL", () => {
+    expect(page).toContain("new URLSearchParams(window.location.search).get('upload_id')");
+    expect(page).toContain("fetch(`/api/slips/pending/${encodeURIComponent(urlUploadId)}`");
+    expect(page).toContain("ลิงก์อาจหมดอายุหรือไม่ใช่ของผู้ใช้");
+    expect(page).toContain("uploadId = urlUploadId");
+  });
+
   it("makes the first-time workflow and dashboard boundaries explicit", () => {
     expect(page).toContain('aria-label="ขั้นตอนการบันทึกรายการ"');
     expect(page).toContain("เลือกรูปสลิปเพื่อเริ่มต้น");

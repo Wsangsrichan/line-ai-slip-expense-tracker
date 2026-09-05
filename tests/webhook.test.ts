@@ -104,7 +104,7 @@ describe("LINE webhook", () => {
 
   it("downloads, stores, extracts, creates a pending slip, and replies for an image", async () => {
     const storage = { put: vi.fn().mockResolvedValue("line-user-1/slip-1") };
-    const pendingSlips = { createPending: vi.fn().mockResolvedValue("pending-1"), consume: vi.fn() };
+    const pendingSlips = { createPending: vi.fn().mockResolvedValue("pending-1"), getPending: vi.fn(), consume: vi.fn() };
     const content = { download: vi.fn().mockResolvedValue({ buffer: Buffer.from("image-bytes"), mimeType: "image/jpeg" }) };
     const messaging = { reply: vi.fn().mockResolvedValue(undefined) };
     const extractor = { extract: vi.fn().mockResolvedValue({

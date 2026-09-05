@@ -116,6 +116,18 @@ export function createApp(dependencies: AppDependencies = {}) {
     }
   });
 
+  app.get("/api/slips/pending/:uploadId", async (request, response) => {
+    const userId = await getLineUserId(identityVerifier, {
+      token: request.headers.authorization,
+      dummyUserId: request.headers["x-line-user-id"] as string | undefined,
+    });
+    if (!userId) return response.status(401).json({ error: "ต้องเข้าสู่ระบบ LINE ก่อนใช้งาน" });
+    if (!pendingSlips) return response.status(503).json({ error: "ระบบยังไม่ได้ตั้งค่า durable upload storage" });
+    const pendingSlip = await pendingSlips.getPending(userId, request.params.uploadId);
+    if (!pendingSlip?.extraction) return response.status(404).json({ error: "ไม่พบข้อมูลสลิป ลิงก์อาจหมดอายุหรือไม่ใช่ของผู้ใช้" });
+    return response.json({ upload_id: request.params.uploadId, data: pendingSlip.extraction });
+  });
+
   app.post("/api/transactions/validate", async (request, response) => {
     const userId = await getLineUserId(identityVerifier, {
       token: request.headers.authorization,
@@ -140,7 +152,7 @@ export function createApp(dependencies: AppDependencies = {}) {
       return response.status(422).json({ error: "กรุณาอัปโหลดภาพสลิปก่อนบันทึก" });
     }
     if (!pendingSlips) return response.status(503).json({ error: "ระบบยังไม่ได้ตั้งค่า durable upload storage" });
-    const pendingSlip = await pendingSlips.consume(userId, request.body.upload_id);
+    const pendingSlip = await pendingSlips.getPending(userId, request.body.upload_id);
     if (!pendingSlip) return response.status(404).json({ error: "ไม่พบภาพสลิปหรือภาพนี้ไม่ใช่ของผู้ใช้" });
     try {
       const transaction = await transactionRepository.create(userId, {
@@ -148,6 +160,7 @@ export function createApp(dependencies: AppDependencies = {}) {
         slip_image_url: pendingSlip.storageRef,
         slip_content_sha256: pendingSlip.contentHash,
       });
+      await pendingSlips.consume(userId, request.body.upload_id);
       return response.status(201).json({ saved: true, transaction });
     } catch (error) {
       if ((error as { code?: string }).code === DUPLICATE_SLIP_ERROR_CODE) {
