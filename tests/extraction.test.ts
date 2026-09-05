@@ -56,8 +56,8 @@ describe("slip extraction", () => {
     );
 
     expect(result.success).toBe(true);
-    expect(DEFAULT_GEMINI_MODEL).toBe("gemini-2.5-flash");
-    expect(fetchMock.mock.calls[0][0]).toContain("/models/gemini-2.5-flash:generateContent");
+    expect(DEFAULT_GEMINI_MODEL).toBe("gemini-3.6-flash");
+    expect(fetchMock.mock.calls[0][0]).toContain("/models/gemini-3.6-flash:generateContent");
   });
 
   it("maps Gemini provider HTTP failures to a safe generic result", async () => {
