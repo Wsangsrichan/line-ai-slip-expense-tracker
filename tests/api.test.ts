@@ -11,6 +11,37 @@ afterEach(() => {
 });
 
 describe("Capture-to-Verify API", () => {
+  it.each([
+    ["missing extraction", null, "missing-extraction"],
+    ["schema-invalid extraction", undefined, "schema-invalid"],
+  ])("diagnoses pending %s while preserving the generic not-found response", async (_name, extraction, reason) => {
+    const logger = { error: vi.fn() };
+    const pendingSlips = {
+      getPending: vi.fn().mockResolvedValue({ storageRef: "slip", contentHash: "hash", extraction, extractionStatus: reason === "schema-invalid" ? "invalid" : "missing" }),
+      createPending: vi.fn(), consume: vi.fn(),
+    } as never;
+    const response = await request(createApp({ pendingSlips, logger })).get("/api/slips/pending/pending-id").set("x-line-user-id", "owner");
+
+    expect(response.status).toBe(404);
+    expect(response.body).toEqual({ error: "ไม่พบข้อมูลสลิป ลิงก์อาจหมดอายุหรือไม่ใช่ของผู้ใช้" });
+    expect(logger.error).toHaveBeenCalledWith("Pending slip GET diagnostic", {
+      stage: "pending-get", reason, hasExtraction: false,
+    });
+  });
+
+  it("logs pending database errors safely and returns a generic service error", async () => {
+    const logger = { error: vi.fn() };
+    const pendingSlips = { getPending: vi.fn().mockRejectedValue(new Error("database password=secret")), createPending: vi.fn(), consume: vi.fn() } as never;
+    const response = await request(createApp({ pendingSlips, logger })).get("/api/slips/pending/pending-id").set("x-line-user-id", "owner");
+
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ error: "ไม่สามารถโหลดข้อมูลสลิปได้ กรุณาลองใหม่" });
+    expect(logger.error).toHaveBeenCalledWith("Pending slip GET diagnostic", {
+      stage: "pending-get", reason: "database-error", hasExtraction: false, errorClass: "Error",
+    });
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain("secret");
+  });
+
   it("previews an owned pending slip without consuming it", async () => {
     const pendingSlips = new DummyPendingSlipStore();
     const uploadId = await pendingSlips.createPending("preview-user", "preview/slip", "hash", {

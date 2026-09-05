@@ -36,6 +36,19 @@ describe("upload status UI contract", () => {
     expect(uploadGuard).toBeLessThan(uploadRequest);
   });
 
+  it("shows and enables Save after a pending response contains validated data", () => {
+    const pendingLoad = page.indexOf("const populatePendingSlip");
+    const dataLoad = page.indexOf("const data = payload.data", pendingLoad);
+    const revealForm = page.indexOf("$('verify').hidden = false", dataLoad);
+    const syncSave = page.indexOf("syncSave();", revealForm);
+
+    expect(pendingLoad).toBeGreaterThanOrEqual(0);
+    expect(page).toContain("if (!response.ok || !payload.data)");
+    expect(page).toContain("$('save').disabled = saveInFlight || required.some");
+    expect(revealForm).toBeGreaterThan(dataLoad);
+    expect(syncSave).toBeGreaterThan(revealForm);
+  });
+
   it("refreshes login state and access token immediately before API calls", () => {
     expect(page).toContain("const getFreshAccessToken = async () =>");
     expect(page).toContain("if (!window.liff || !window.liff.isLoggedIn()) return null");

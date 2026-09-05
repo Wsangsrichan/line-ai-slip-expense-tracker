@@ -7,7 +7,7 @@ import { createExtractor, extractSlip } from "./services/extraction.js";
 import { DummyIdentityVerifier, LineApiIdentityVerifier, getLineUserId } from "./services/identity.js";
 import { validateImageUpload } from "./services/upload.js";
 import { aggregateDashboard, getBangkokMonthBounds } from "./services/dashboard.js";
-import { createSupabasePersistence, DUPLICATE_SLIP_ERROR_CODE, DUPLICATE_SLIP_ERROR_MESSAGE, DummyPendingSlipStore, DummySlipStorage, DummyTransactionRepository, DummyWebhookEventStore, SignedPendingSlipStore, type PendingSlipStore, type SlipStorage, type TransactionRepository, type WebhookEventStore } from "./services/persistence.js";
+import { createSupabasePersistence, DUPLICATE_SLIP_ERROR_CODE, DUPLICATE_SLIP_ERROR_MESSAGE, DummyPendingSlipStore, DummySlipStorage, DummyTransactionRepository, DummyWebhookEventStore, SignedPendingSlipStore, type PendingSlipDiagnostic, type PendingSlipLogger, type PendingSlipStore, type SlipStorage, type TransactionRepository, type WebhookEventStore } from "./services/persistence.js";
 import { createLineWebhookProcessor, LineContentApiClient, LineMessagingApiClient, verifyLineSignature, type LineContentClient, type LineMessagingClient, type LineWebhookLogger } from "./services/line-webhook.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -18,6 +18,7 @@ export interface AppDependencies {
   pendingSlips?: PendingSlipStore;
   events?: WebhookEventStore;
   extractor?: ReturnType<typeof createExtractor>;
+  logger?: PendingSlipLogger;
   line?: { channelSecret: string; content: LineContentClient; messaging: LineMessagingClient; liffUrl?: string; logger?: LineWebhookLogger };
 }
 
@@ -29,10 +30,11 @@ declare global {
 
 export function createApp(dependencies: AppDependencies = {}) {
   const app = express();
-  const supabase = createSupabasePersistence();
+  const logger = dependencies.logger ?? console;
+  const supabase = createSupabasePersistence(process.env, logger);
   const isProduction = process.env.NODE_ENV === "production";
   const storage = dependencies.storage ?? supabase ?? (isProduction ? null : new DummySlipStorage());
-  const pendingSlips = dependencies.pendingSlips ?? supabase ?? (isProduction ? null : process.env.UPLOAD_SIGNING_KEY
+  const pendingSlips: PendingSlipStore | null = dependencies.pendingSlips ?? supabase ?? (isProduction ? null : process.env.UPLOAD_SIGNING_KEY
     ? new SignedPendingSlipStore(process.env.UPLOAD_SIGNING_KEY)
     : process.env.VERCEL === "1" ? null : new DummyPendingSlipStore());
   const transactionRepository = dependencies.transactionRepository ?? supabase ?? new DummyTransactionRepository();
@@ -123,9 +125,26 @@ export function createApp(dependencies: AppDependencies = {}) {
     });
     if (!userId) return response.status(401).json({ error: "ต้องเข้าสู่ระบบ LINE ก่อนใช้งาน" });
     if (!pendingSlips) return response.status(503).json({ error: "ระบบยังไม่ได้ตั้งค่า durable upload storage" });
-    const pendingSlip = await pendingSlips.getPending(userId, request.params.uploadId);
-    if (!pendingSlip?.extraction) return response.status(404).json({ error: "ไม่พบข้อมูลสลิป ลิงก์อาจหมดอายุหรือไม่ใช่ของผู้ใช้" });
-    return response.json({ upload_id: request.params.uploadId, data: pendingSlip.extraction });
+    try {
+      const pendingSlip = await pendingSlips.getPending(userId, request.params.uploadId);
+      if (!pendingSlip) {
+        logPendingDiagnostic(logger, { stage: "pending-get", reason: "not-found", hasExtraction: false });
+        return response.status(404).json({ error: "ไม่พบข้อมูลสลิป ลิงก์อาจหมดอายุหรือไม่ใช่ของผู้ใช้" });
+      }
+      if (!pendingSlip.extraction) {
+        logPendingDiagnostic(logger, {
+          stage: "pending-get",
+          reason: pendingSlip.extractionStatus === "invalid" ? "schema-invalid" : "missing-extraction",
+          hasExtraction: false,
+        });
+        return response.status(404).json({ error: "ไม่พบข้อมูลสลิป ลิงก์อาจหมดอายุหรือไม่ใช่ของผู้ใช้" });
+      }
+      logPendingDiagnostic(logger, { stage: "pending-get", reason: "found", hasExtraction: true });
+      return response.json({ upload_id: request.params.uploadId, data: pendingSlip.extraction });
+    } catch (error) {
+      logPendingDiagnostic(logger, { stage: "pending-get", reason: "database-error", hasExtraction: false, errorClass: errorClass(error) });
+      return response.status(503).json({ error: "ไม่สามารถโหลดข้อมูลสลิปได้ กรุณาลองใหม่" });
+    }
   });
 
   app.post("/api/transactions/validate", async (request, response) => {
@@ -171,6 +190,15 @@ export function createApp(dependencies: AppDependencies = {}) {
   });
 
   return app;
+}
+
+function logPendingDiagnostic(logger: PendingSlipLogger, diagnostic: PendingSlipDiagnostic) {
+  try { logger.error("Pending slip GET diagnostic", diagnostic); } catch { /* diagnostics are best effort */ }
+}
+
+function errorClass(error: unknown) {
+  const name = error instanceof Error ? error.constructor.name : typeof error;
+  return name.replace(/[^a-zA-Z0-9_$]/g, "?").slice(0, 64) || "UnknownError";
 }
 
 // Vercel detects src/app.ts as an Express entrypoint. Keep the app as a

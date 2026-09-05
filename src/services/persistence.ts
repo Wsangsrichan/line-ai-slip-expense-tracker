@@ -21,6 +21,27 @@ export interface PendingSlip {
   storageRef: string;
   contentHash: string;
   extraction?: SlipExtraction;
+  extractionStatus?: "valid" | "missing" | "invalid";
+}
+
+export type PendingSlipDiagnosticReason = "found" | "not-found" | "missing-extraction" | "schema-invalid" | "database-error";
+
+export interface PendingSlipDiagnostic {
+  stage: "pending-get";
+  reason: PendingSlipDiagnosticReason;
+  hasExtraction: boolean;
+  errorClass?: string;
+}
+
+export interface PendingSlipLogger {
+  error(message: string, diagnostic: PendingSlipDiagnostic): void;
+}
+
+export class PendingSlipDatabaseError extends Error {
+  constructor() {
+    super("Pending slip database operation failed");
+    this.name = "PendingSlipDatabaseError";
+  }
 }
 
 export interface PendingSlipMetadata {
@@ -72,13 +93,13 @@ export class DummyPendingSlipStore implements PendingSlipStore {
     return uploadId;
   }
 
-  async getPending(userId: string, uploadId: string) {
+  async getPending(userId: string, uploadId: string): Promise<PendingSlip | null> {
     const item = this.pending.get(uploadId);
     if (!item || item.userId !== userId || item.expiresAt <= Date.now()) return null;
     return { storageRef: item.storageRef, contentHash: item.contentHash, extraction: item.extraction };
   }
 
-  async consume(userId: string, uploadId: string) {
+  async consume(userId: string, uploadId: string): Promise<PendingSlip | null> {
     const item = this.pending.get(uploadId);
     if (!item || item.userId !== userId || item.expiresAt <= Date.now()) return null;
     this.pending.delete(uploadId);
@@ -148,7 +169,7 @@ export class SignedPendingSlipStore implements PendingSlipStore {
 }
 
 export class SupabasePersistence implements SlipStorage, TransactionRepository, PendingSlipStore {
-  constructor(private readonly client: SupabaseClient) {}
+  constructor(private readonly client: SupabaseClient, private readonly logger?: PendingSlipLogger) {}
 
   async put(userId: string, image: Buffer, contentType: string) {
     const path = `${userId}/${crypto.randomUUID()}`;
@@ -190,16 +211,33 @@ export class SupabasePersistence implements SlipStorage, TransactionRepository, 
       line_message_id: metadata?.messageId ?? null,
       extraction: metadata?.extraction ?? null,
     }).select("id").single();
-    if (result.error) throw result.error;
-    return result.data.id as string;
+    if (result.error || !result.data || typeof result.data.id !== "string") throw new PendingSlipDatabaseError();
+    return result.data.id;
   }
 
   async getPending(userId: string, uploadId: string) {
     const result = await this.client.from("pending_slips").select("storage_ref,content_hash,extraction")
       .eq("id", uploadId).eq("line_user_id", userId).gt("expires_at", new Date().toISOString()).maybeSingle();
-    if (result.error || !result.data) return null;
-    const extraction = extractionSchema.safeParse(result.data.extraction);
-    return { storageRef: result.data.storage_ref as string, contentHash: result.data.content_hash as string, extraction: extraction.success ? extraction.data : undefined };
+    if (result.error) {
+      this.logPending({ stage: "pending-get", reason: "database-error", hasExtraction: false, errorClass: errorClass(result.error) });
+      throw new PendingSlipDatabaseError();
+    }
+    if (!result.data) {
+      this.logPending({ stage: "pending-get", reason: "not-found", hasExtraction: false });
+      return null;
+    }
+    const parsed = parseStoredExtraction(result.data.extraction);
+    this.logPending({
+      stage: "pending-get",
+      reason: parsed.status === "valid" ? "found" : parsed.status === "missing" ? "missing-extraction" : "schema-invalid",
+      hasExtraction: parsed.status === "valid",
+    });
+    return {
+      storageRef: result.data.storage_ref as string,
+      contentHash: result.data.content_hash as string,
+      extraction: parsed.extraction,
+      extractionStatus: parsed.status,
+    };
   }
 
   async claim(eventId: string, userId: string, messageId: string) {
@@ -214,18 +252,39 @@ export class SupabasePersistence implements SlipStorage, TransactionRepository, 
   async consume(userId: string, uploadId: string) {
     const result = await this.client.from("pending_slips").delete()
       .eq("id", uploadId).eq("line_user_id", userId).gt("expires_at", new Date().toISOString()).select("storage_ref,content_hash,extraction").single();
-    if (result.error) return null;
+    if (result.error || !result.data) return null;
+    const parsed = parseStoredExtraction(result.data.extraction);
     return {
       storageRef: result.data.storage_ref as string,
       contentHash: result.data.content_hash as string,
-      extraction: extractionSchema.safeParse(result.data.extraction).success ? extractionSchema.parse(result.data.extraction) : undefined,
+      extraction: parsed.extraction,
+      extractionStatus: parsed.status,
     };
+  }
+
+  private logPending(diagnostic: PendingSlipDiagnostic) {
+    try { this.logger?.error("Pending slip persistence diagnostic", diagnostic); } catch { /* diagnostics are best effort */ }
   }
 }
 
-export function createSupabasePersistence(env: NodeJS.ProcessEnv = process.env) {
+function parseStoredExtraction(value: unknown): { extraction?: SlipExtraction; status: "valid" | "missing" | "invalid" } {
+  if (value === null || value === undefined || value === "") return { status: "missing" };
+  let candidate = value;
+  if (typeof value === "string") {
+    try { candidate = JSON.parse(value); } catch { return { status: "invalid" }; }
+  }
+  const parsed = extractionSchema.safeParse(candidate);
+  return parsed.success ? { extraction: parsed.data, status: "valid" } : { status: "invalid" };
+}
+
+function errorClass(error: unknown) {
+  const name = error instanceof Error ? error.constructor.name : typeof error;
+  return name.replace(/[^a-zA-Z0-9_$]/g, "?").slice(0, 64) || "UnknownError";
+}
+
+export function createSupabasePersistence(env: NodeJS.ProcessEnv = process.env, logger?: PendingSlipLogger) {
   const url = env.SUPABASE_URL;
   const key = env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) return null;
-  return new SupabasePersistence(createClient(url, key));
+  return new SupabasePersistence(createClient(url, key), logger);
 }

@@ -26,6 +26,69 @@ describe("persistence wiring", () => {
     })).not.toBeNull();
   });
 
+  it("returns extraction when Supabase returns JSON text for a jsonb column", async () => {
+    const pendingSingle = vi.fn().mockResolvedValue({
+      data: {
+        storage_ref: "user-a/slip",
+        content_hash: "hash",
+        extraction: JSON.stringify({
+          type: "expense", amount: 12.5, payee_payer: "ร้านค้า", category: "อาหาร",
+          transaction_datetime: "2026-09-05T10:30:00+07:00",
+        }),
+      },
+      error: null,
+    });
+    const client = { from: vi.fn().mockReturnValue({
+      select: vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnThis(),
+        gt: vi.fn().mockReturnValue({ maybeSingle: pendingSingle }),
+      }),
+    }) } as unknown as SupabaseClient;
+    const { SupabasePersistence } = await import("../src/services/persistence.js");
+
+    await expect(new SupabasePersistence(client).getPending("user-a", "pending-id")).resolves.toMatchObject({
+      storageRef: "user-a/slip",
+      contentHash: "hash",
+      extraction: expect.objectContaining({ amount: 12.5 }),
+    });
+  });
+
+  it("marks absent and invalid stored extraction separately", async () => {
+    const logger = { error: vi.fn() };
+    const responses = [
+      { data: { storage_ref: "slip", content_hash: "hash", extraction: null }, error: null },
+      { data: { storage_ref: "slip", content_hash: "hash", extraction: { amount: "invalid" } }, error: null },
+    ];
+    const client = { from: vi.fn().mockReturnValue({
+      select: vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnThis(),
+        gt: vi.fn().mockReturnValue({ maybeSingle: vi.fn().mockImplementation(() => Promise.resolve(responses.shift())) }),
+      }),
+    }) } as unknown as SupabaseClient;
+    const { SupabasePersistence } = await import("../src/services/persistence.js");
+    const store = new SupabasePersistence(client, logger);
+
+    expect((await store.getPending("user-a", "pending-id"))?.extractionStatus).toBe("missing");
+    expect((await store.getPending("user-a", "pending-id"))?.extractionStatus).toBe("invalid");
+    expect(logger.error).toHaveBeenNthCalledWith(1, "Pending slip persistence diagnostic", { stage: "pending-get", reason: "missing-extraction", hasExtraction: false });
+    expect(logger.error).toHaveBeenNthCalledWith(2, "Pending slip persistence diagnostic", { stage: "pending-get", reason: "schema-invalid", hasExtraction: false });
+  });
+
+  it("converts Supabase query errors into a safe database error", async () => {
+    const logger = { error: vi.fn() };
+    const client = { from: vi.fn().mockReturnValue({
+      select: vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnThis(),
+        gt: vi.fn().mockReturnValue({ maybeSingle: vi.fn().mockResolvedValue({ data: null, error: { code: "secret-db-code", message: "password=secret" } }) }),
+      }),
+    }) } as unknown as SupabaseClient;
+    const { SupabasePersistence, PendingSlipDatabaseError } = await import("../src/services/persistence.js");
+
+    await expect(new SupabasePersistence(client, logger).getPending("user-a", "pending-id")).rejects.toBeInstanceOf(PendingSlipDatabaseError);
+    expect(logger.error).toHaveBeenCalledWith("Pending slip persistence diagnostic", { stage: "pending-get", reason: "database-error", hasExtraction: false, errorClass: "object" });
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain("secret");
+  });
+
   it("maps only transaction table columns and ignores extraction metadata such as bank", async () => {
     const single = vi.fn().mockResolvedValue({ data: { id: "transaction-id" }, error: null });
     const select = vi.fn().mockReturnValue({ single });
@@ -66,9 +129,10 @@ describe("persistence wiring", () => {
   it("stores pending slip metadata and claims webhook events durably", async () => {
     const pendingSingle = vi.fn().mockResolvedValue({ data: { id: "pending-id" }, error: null });
     const eventSingle = vi.fn().mockResolvedValue({ data: { event_id: "event-id" }, error: null });
+    const pendingInsert = vi.fn().mockReturnValue({ select: vi.fn().mockReturnValue({ single: pendingSingle }) });
     const client = {
       from: vi.fn((table: string) => table === "pending_slips"
-        ? { insert: vi.fn().mockReturnValue({ select: vi.fn().mockReturnValue({ single: pendingSingle }) }) }
+        ? { insert: pendingInsert }
         : { insert: vi.fn().mockReturnValue({ select: vi.fn().mockReturnValue({ single: eventSingle }) }) }),
     } as unknown as SupabaseClient;
     const { SupabasePersistence } = await import("../src/services/persistence.js");
@@ -84,5 +148,9 @@ describe("persistence wiring", () => {
 
     expect(client.from).toHaveBeenCalledWith("pending_slips");
     expect(client.from).toHaveBeenCalledWith("webhook_events");
+    expect(pendingInsert).toHaveBeenCalledWith(expect.objectContaining({
+      line_user_id: "user-a", storage_ref: "user-a/slip", content_hash: "hash",
+      extraction: expect.objectContaining({ amount: 100, payee_payer: "ร้านค้า" }),
+    }));
   });
 });

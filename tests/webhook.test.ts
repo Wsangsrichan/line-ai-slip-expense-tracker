@@ -123,7 +123,10 @@ describe("LINE webhook", () => {
     expect(storage.put).toHaveBeenCalledWith("line-user-1", Buffer.from("image-bytes"), "image/jpeg");
     expect(pendingSlips.createPending).toHaveBeenCalledWith(
       "line-user-1", "line-user-1/slip-1", expect.any(String),
-      expect.objectContaining({ eventId: "evt-1", messageId: "message-1" }),
+      expect.objectContaining({
+        eventId: "evt-1", messageId: "message-1",
+        extraction: expect.objectContaining({ amount: 125, payee_payer: "ร้านค้า" }),
+      }),
     );
     expect(messaging.reply).toHaveBeenCalledWith("reply-1", expect.objectContaining({ type: "flex" }));
   });
