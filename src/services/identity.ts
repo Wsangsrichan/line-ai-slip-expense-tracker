@@ -11,12 +11,11 @@ export class DummyIdentityVerifier implements LineIdentityVerifier {
 export class LineApiIdentityVerifier implements LineIdentityVerifier {
   async verify(request: { token?: string }) {
     if (!request.token) return null;
-    const token = request.token.replace(/^Bearer /i, "");
-    const response = await fetch("https://api.line.me/oauth2/v2.1/verify", {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ access_token: token }),
-    });
+    const token = request.token.replace(/^Bearer /i, "").trim();
+    if (!token) return null;
+    const verifyUrl = new URL("https://api.line.me/oauth2/v2.1/verify");
+    verifyUrl.searchParams.set("access_token", token);
+    const response = await fetch(verifyUrl);
     if (!response.ok) return null;
     const profile = await fetch("https://api.line.me/v2/profile", {
       headers: { authorization: `Bearer ${token}` },
