@@ -72,7 +72,7 @@ export function createApp(dependencies: AppDependencies = {}) {
     const fileCheck = validateImageUpload(request.file.mimetype, request.file.size);
     if (!fileCheck.valid) return response.status(415).json({ error: fileCheck.message });
 
-    const result = await extractSlip(extractor, request.file.buffer);
+    const result = await extractSlip(extractor, request.file.buffer, request.file.mimetype);
     if (!result.success) return response.status(422).json({ error: result.message });
     if (!pendingSlips) return response.status(503).json({ error: "ระบบยังไม่ได้ตั้งค่า durable upload storage" });
     const contentHash = createHash("sha256").update(request.file.buffer).digest("hex");

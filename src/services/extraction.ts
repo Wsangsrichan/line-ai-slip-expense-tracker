@@ -2,8 +2,11 @@ import { extractionSchema, type SlipExtraction } from "../domain/slip.js";
 
 export const DEFAULT_GEMINI_MODEL = "gemini-3.6-flash";
 
+class GeminiProviderError extends Error {}
+class GeminiResponseError extends Error {}
+
 export interface SlipExtractor {
-  extract(image: Buffer): Promise<unknown>;
+  extract(image: Buffer, mimeType?: string): Promise<unknown>;
 }
 
 export class DummyExtractor implements SlipExtractor {
@@ -25,7 +28,7 @@ export class GeminiExtractor implements SlipExtractor {
     private readonly model = DEFAULT_GEMINI_MODEL,
   ) {}
 
-  async extract(image: Buffer): Promise<unknown> {
+  async extract(image: Buffer, mimeType = "image/jpeg"): Promise<unknown> {
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent?key=${encodeURIComponent(this.apiKey)}`,
       {
@@ -34,17 +37,27 @@ export class GeminiExtractor implements SlipExtractor {
         body: JSON.stringify({
           contents: [{ parts: [
             { text: "อ่านภาพสลิปและคืน JSON เท่านั้น: type (income|expense), amount, payee_payer, category (อาหาร|เดินทาง|ที่พัก|ช้อปปิ้ง|บิล/สาธารณูปโภค|สุขภาพ|บันเทิง|อื่น ๆ), transaction_datetime เป็น ISO 8601 พร้อม offset, bank เป็นชื่อธนาคารถ้าอ่านได้ ถ้าไม่แน่ใจให้ใช้ อื่น ๆ" },
-            { inline_data: { mime_type: "image/jpeg", data: image.toString("base64") } },
+            { inline_data: { mime_type: mimeType, data: image.toString("base64") } },
           ] }],
           generationConfig: { responseMimeType: "application/json" },
         }),
       },
     );
-    if (!response.ok) throw new Error("Gemini extraction failed");
-    const payload = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-    const text = payload.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) throw new Error("Gemini returned no extraction");
-    return JSON.parse(text);
+    if (!response.ok) throw new GeminiProviderError("Gemini request failed");
+    let payload: { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+    try {
+      payload = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+    } catch {
+      throw new GeminiResponseError("Gemini returned invalid response");
+    }
+    const text = payload.candidates?.[0]?.content?.parts?.map((part) => part.text)
+      .find((partText): partText is string => Boolean(partText?.trim()));
+    if (!text) throw new GeminiResponseError("Gemini returned no extraction");
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new GeminiResponseError("Gemini returned invalid extraction");
+    }
   }
 }
 
@@ -57,14 +70,17 @@ export function createExtractor(env: NodeJS.ProcessEnv = process.env): SlipExtra
     : new DummyExtractor();
 }
 
-export async function extractSlip(extractor: SlipExtractor, image: Buffer) {
+export async function extractSlip(extractor: SlipExtractor, image: Buffer, mimeType?: string) {
   try {
-    const parsed = extractionSchema.safeParse(await extractor.extract(image));
+    const parsed = extractionSchema.safeParse(await extractor.extract(image, mimeType));
     if (!parsed.success) {
       return { success: false as const, message: "ข้อมูลจาก AI ไม่ครบถ้วน กรุณาตรวจสอบและแก้ไข" };
     }
     return { success: true as const, data: parsed.data };
-  } catch {
-    return { success: false as const, message: "ไม่สามารถประมวลผลสลิปได้ กรุณาลองใหม่" };
+  } catch (error) {
+    if (error instanceof GeminiResponseError) {
+      return { success: false as const, message: "AI ส่งข้อมูลไม่ถูกต้อง กรุณาลองใหม่" };
+    }
+    return { success: false as const, message: "บริการ AI ไม่พร้อมใช้งาน กรุณาลองใหม่" };
   }
 }

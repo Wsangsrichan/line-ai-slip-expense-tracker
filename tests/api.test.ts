@@ -4,6 +4,7 @@ import { createApp } from "../src/app.js";
 
 afterEach(() => {
   process.env.LINE_AUTH_MODE = "dummy";
+  delete process.env.GEMINI_API_KEY;
   delete process.env.VERCEL;
   vi.unstubAllGlobals();
 });
@@ -32,6 +33,25 @@ describe("Capture-to-Verify API", () => {
     expect(response.body.data.amount).toBe(250);
     expect(response.body.data.bank).toBe("Other Bank");
     expect(response.body.upload_id).toEqual(expect.any(String));
+  });
+
+  it("passes the uploaded PNG MIME type through to Gemini extraction", async () => {
+    process.env.GEMINI_API_KEY = "placeholder-api-key";
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: JSON.stringify({
+        type: "expense", amount: 250, payee_payer: "ร้านค้าตัวอย่าง", category: "อาหาร",
+        transaction_datetime: "2026-09-05T10:30:00+07:00",
+      }) }] } }],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await request(createApp()).post("/api/slips/extract")
+      .set("x-line-user-id", "dummy-user")
+      .attach("slip", Buffer.from("png image bytes"), { filename: "slip.png", contentType: "image/png" });
+
+    expect(response.status).toBe(200);
+    const requestBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(requestBody.contents[0].parts.find((part: { inline_data?: unknown }) => part.inline_data)?.inline_data.mime_type).toBe("image/png");
   });
 
   it("rejects an upload without LINE identity", async () => {
