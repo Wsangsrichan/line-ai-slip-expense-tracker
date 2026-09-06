@@ -201,6 +201,60 @@ describe("Capture-to-Verify API", () => {
     expect((await request(app).get(`/api/slips/pending/${uploadId}`).set("x-line-user-id", "retry-user")).status).toBe(200);
   });
 
+  it("diagnoses transaction create failures without logging request identity or provider details", async () => {
+    const logger = { error: vi.fn() };
+    const pendingSlips = new DummyPendingSlipStore();
+    const transactionRepository = {
+      create: vi.fn().mockRejectedValue(Object.assign(new Error("relation missing user-id secret"), { code: "42703", status: 500 })),
+      listForDashboard: vi.fn().mockResolvedValue([]),
+    };
+    const uploadId = await pendingSlips.createPending("diagnostic-user", "slip", "hash", {
+      extraction: { type: "expense", amount: 10, payee_payer: "ร้านค้า", category: "อาหาร", transaction_datetime: "2026-09-05T10:30:00+07:00" },
+    });
+    const app = createApp({ pendingSlips, transactionRepository, logger });
+    const body = { type: "expense", amount: 10, payee_payer: "ร้านค้า", category: "อาหาร", transaction_datetime: "2026-09-05T10:30:00+07:00", upload_id: uploadId };
+
+    const response = await request(app).post("/api/transactions").set("x-line-user-id", "diagnostic-user").send(body);
+
+    expect(response.status).toBe(503);
+    expect(logger.error).toHaveBeenCalledWith("Transaction persistence diagnostic", {
+      stage: "transaction-create", reason: "database-error", errorClass: "Error", supabaseCode: "42703", httpStatus: 500,
+    });
+    const diagnostics = JSON.stringify(logger.error.mock.calls);
+    expect(diagnostics).not.toContain("diagnostic-user");
+    expect(diagnostics).not.toContain(uploadId);
+    expect(diagnostics).not.toContain("secret");
+    expect((await request(app).get(`/api/slips/pending/${uploadId}`).set("x-line-user-id", "diagnostic-user")).status).toBe(200);
+  });
+
+  it("returns success after durable create when pending cleanup fails and diagnoses the cleanup stage", async () => {
+    const logger = { error: vi.fn() };
+    const pendingSlips = {
+      getPending: vi.fn().mockResolvedValue({
+        storageRef: "slip", contentHash: "hash",
+        extraction: { type: "expense", amount: 10, payee_payer: "ร้านค้า", category: "อาหาร", transaction_datetime: "2026-09-05T10:30:00+07:00" },
+      }),
+      createPending: vi.fn(),
+      consume: vi.fn().mockRejectedValue(Object.assign(new Error("cleanup secret"), { code: "XX000", status: 503 })),
+    } as never;
+    const transactionRepository = {
+      create: vi.fn().mockResolvedValue({ id: "transaction-id" }),
+      listForDashboard: vi.fn().mockResolvedValue([]),
+    };
+    const app = createApp({ pendingSlips, transactionRepository, logger });
+
+    const response = await request(app).post("/api/transactions").set("x-line-user-id", "cleanup-user").send({
+      type: "expense", amount: 10, payee_payer: "ร้านค้า", category: "อาหาร", transaction_datetime: "2026-09-05T10:30:00+07:00", upload_id: "upload-id",
+    });
+
+    expect(response.status).toBe(201);
+    expect(logger.error).toHaveBeenCalledWith("Transaction persistence diagnostic", {
+      stage: "transaction-consume", reason: "cleanup-error", errorClass: "Error", supabaseCode: "XX000", httpStatus: 503,
+    });
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain("cleanup-user");
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain("cleanup secret");
+  });
+
   it("rejects the same image bytes for the same LINE user", async () => {
     const app = createApp();
     const image = Buffer.from("same-slip-bytes");

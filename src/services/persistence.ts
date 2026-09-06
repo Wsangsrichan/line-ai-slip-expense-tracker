@@ -39,7 +39,15 @@ export interface PendingSlipDiagnostic {
 }
 
 export interface PendingSlipLogger {
-  error(message: string, diagnostic: PendingSlipDiagnostic): void;
+  error(message: string, diagnostic: PendingSlipDiagnostic | TransactionDiagnostic): void;
+}
+
+export interface TransactionDiagnostic {
+  stage: "transaction-create" | "transaction-consume";
+  reason: "database-error" | "duplicate" | "cleanup-not-found" | "cleanup-error";
+  errorClass?: string;
+  supabaseCode?: string;
+  httpStatus?: number;
 }
 
 export class PendingSlipDatabaseError extends Error {
@@ -193,14 +201,13 @@ export class SupabasePersistence implements SlipStorage, TransactionRepository, 
       transaction_datetime: data.transaction_datetime,
       slip_image_url: data.slip_image_url,
       slip_content_sha256: data.slip_content_sha256,
-      direction: data.type,
     }).select("id").single();
     if (result.error) throw result.error;
     return result.data as { id: string };
   }
 
   async listForDashboard(userId: string, _start: Date, _end: Date, previousStart: Date) {
-    const result = await this.client.from("transactions").select("id,type,direction,amount,category,transaction_datetime")
+    const result = await this.client.from("transactions").select("id,type,amount,category,transaction_datetime")
       .eq("line_user_id", userId).gte("transaction_datetime", previousStart.toISOString()).lt("transaction_datetime", _end.toISOString());
     if (result.error) throw result.error;
     return (result.data ?? []) as DashboardTransaction[];
@@ -263,7 +270,11 @@ export class SupabasePersistence implements SlipStorage, TransactionRepository, 
   async consume(userId: string, uploadId: string) {
     const result = await this.client.from("pending_slips").delete()
       .eq("id", uploadId).eq("line_user_id", userId).gt("expires_at", new Date().toISOString()).select("storage_ref,content_hash,extraction").single();
-    if (result.error || !result.data) return null;
+    if (result.error) {
+      if ((result.error as { code?: string }).code === "PGRST116") return null;
+      throw result.error;
+    }
+    if (!result.data) return null;
     const parsed = parseStoredExtraction(result.data.extraction);
     return {
       storageRef: result.data.storage_ref as string,

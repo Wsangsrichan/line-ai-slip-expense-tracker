@@ -150,8 +150,27 @@ describe("persistence wiring", () => {
       transaction_datetime: "2026-09-05T10:30:00+07:00",
       slip_image_url: "user-a/slip-id",
       slip_content_sha256: "hash-a",
-      direction: "expense",
     });
+  });
+
+  it("does not select the optional direction column for dashboard reads", async () => {
+    const query = {
+      eq: vi.fn().mockReturnThis(),
+      gte: vi.fn().mockReturnThis(),
+      lt: vi.fn().mockResolvedValue({ data: [], error: null }),
+    };
+    const select = vi.fn().mockReturnValue(query);
+    const client = { from: vi.fn().mockReturnValue({ select }) } as unknown as SupabaseClient;
+    const { SupabasePersistence } = await import("../src/services/persistence.js");
+
+    await new SupabasePersistence(client).listForDashboard(
+      "user-a",
+      new Date("2026-09-01T00:00:00+07:00"),
+      new Date("2026-10-01T00:00:00+07:00"),
+      new Date("2026-08-01T00:00:00+07:00"),
+    );
+
+    expect(select).toHaveBeenCalledWith("id,type,amount,category,transaction_datetime");
   });
 
   it("stores pending slip metadata and claims webhook events durably", async () => {

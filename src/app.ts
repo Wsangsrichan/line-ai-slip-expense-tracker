@@ -7,7 +7,7 @@ import { createExtractor, extractSlip } from "./services/extraction.js";
 import { DummyIdentityVerifier, LineApiIdentityVerifier, getLineUserId } from "./services/identity.js";
 import { validateImageUpload } from "./services/upload.js";
 import { aggregateDashboard, getBangkokMonthBounds } from "./services/dashboard.js";
-import { createSupabasePersistence, DUPLICATE_SLIP_ERROR_CODE, DUPLICATE_SLIP_ERROR_MESSAGE, DummyPendingSlipStore, DummySlipStorage, DummyTransactionRepository, DummyWebhookEventStore, SignedPendingSlipStore, type PendingSlipDiagnostic, type PendingSlipLogger, type PendingSlipStore, type SlipStorage, type TransactionRepository, type WebhookEventStore } from "./services/persistence.js";
+import { createSupabasePersistence, DUPLICATE_SLIP_ERROR_CODE, DUPLICATE_SLIP_ERROR_MESSAGE, DummyPendingSlipStore, DummySlipStorage, DummyTransactionRepository, DummyWebhookEventStore, SignedPendingSlipStore, serializeSupabaseError, type PendingSlipDiagnostic, type PendingSlipLogger, type PendingSlipStore, type SlipStorage, type TransactionDiagnostic, type TransactionRepository, type WebhookEventStore } from "./services/persistence.js";
 import { createLineWebhookProcessor, LineContentApiClient, LineMessagingApiClient, verifyLineSignature, type LineContentClient, type LineMessagingClient, type LineWebhookLogger } from "./services/line-webhook.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -179,20 +179,29 @@ export function createApp(dependencies: AppDependencies = {}) {
     if (!pendingSlips) return response.status(503).json({ error: "ระบบยังไม่ได้ตั้งค่า durable upload storage" });
     const pendingSlip = await pendingSlips.getPending(userId, request.body.upload_id);
     if (!pendingSlip) return response.status(404).json({ error: "ไม่พบภาพสลิปหรือภาพนี้ไม่ใช่ของผู้ใช้" });
+    let transaction: { id: string };
     try {
-      const transaction = await transactionRepository.create(userId, {
+      transaction = await transactionRepository.create(userId, {
         ...result.data,
         slip_image_url: pendingSlip.storageRef,
         slip_content_sha256: pendingSlip.contentHash,
       });
-      await pendingSlips.consume(userId, request.body.upload_id);
-      return response.status(201).json({ saved: true, transaction });
     } catch (error) {
       if ((error as { code?: string }).code === DUPLICATE_SLIP_ERROR_CODE) {
+        logTransactionDiagnostic(logger, { stage: "transaction-create", reason: "duplicate", ...safeDatabaseDiagnostic(error) });
         return response.status(409).json({ error: DUPLICATE_SLIP_ERROR_MESSAGE });
       }
+      logTransactionDiagnostic(logger, { stage: "transaction-create", reason: "database-error", ...safeDatabaseDiagnostic(error) });
       return response.status(503).json({ error: "ไม่สามารถบันทึกรายการได้ กรุณาลองใหม่" });
     }
+    try {
+      const consumed = await pendingSlips.consume(userId, request.body.upload_id);
+      if (!consumed) logTransactionDiagnostic(logger, { stage: "transaction-consume", reason: "cleanup-not-found" });
+    } catch (error) {
+      // The transaction is already durable. Report success and let cleanup be retried/observed separately.
+      logTransactionDiagnostic(logger, { stage: "transaction-consume", reason: "cleanup-error", ...safeDatabaseDiagnostic(error) });
+    }
+    return response.status(201).json({ saved: true, transaction });
   });
 
   return app;
@@ -200,6 +209,19 @@ export function createApp(dependencies: AppDependencies = {}) {
 
 function logPendingDiagnostic(logger: PendingSlipLogger, diagnostic: PendingSlipDiagnostic) {
   try { logger.error("Pending slip GET diagnostic", diagnostic); } catch { /* diagnostics are best effort */ }
+}
+
+function logTransactionDiagnostic(logger: PendingSlipLogger, diagnostic: TransactionDiagnostic) {
+  try { logger.error("Transaction persistence diagnostic", diagnostic); } catch { /* diagnostics are best effort */ }
+}
+
+function safeDatabaseDiagnostic(error: unknown) {
+  const serialized = serializeSupabaseError(error);
+  return {
+    errorClass: errorClass(error),
+    ...(serialized.supabaseCode ? { supabaseCode: serialized.supabaseCode } : {}),
+    ...(serialized.httpStatus ? { httpStatus: serialized.httpStatus } : {}),
+  };
 }
 
 function errorClass(error: unknown) {
