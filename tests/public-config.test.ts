@@ -17,5 +17,7 @@ describe("public LIFF configuration", () => {
     expect(frontend).not.toContain("dummyUserId");
     expect(frontend).not.toContain("x-line-user-id");
     expect(frontend).toContain("window.liff.init({ liffId: config.liffId })");
+    expect(frontend).toContain("get('liff.state')");
+    expect(frontend).toContain("stateUrl.searchParams.get('upload_id')");
   });
 });
