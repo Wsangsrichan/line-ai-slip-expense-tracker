@@ -5,7 +5,7 @@ describe("public LIFF configuration", () => {
   it("contains the production LIFF ID and no dummy identity", () => {
     const config = readFileSync(new URL("../public/config.js", import.meta.url), "utf8");
 
-    expect(config).toContain('liffId: "2011459743-AVxRSBMO"');
+    expect(config).toContain('liffId: "2011468339-n5ZJxKSR"');
     expect(config).not.toContain("dummyUserId");
     expect(config).not.toContain("replace-with-local-dummy-user-id");
     expect(config).not.toMatch(/(TOKEN|KEY|SECRET|PASSWORD|API_KEY)/i);
