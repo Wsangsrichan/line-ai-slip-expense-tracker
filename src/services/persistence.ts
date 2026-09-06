@@ -31,6 +31,9 @@ export interface PendingSlipDiagnostic {
   reason: PendingSlipDiagnosticReason;
   hasExtraction: boolean;
   errorClass?: string;
+  supabaseCode?: string;
+  httpStatus?: number;
+  errorMessage?: string;
 }
 
 export interface PendingSlipLogger {
@@ -219,7 +222,13 @@ export class SupabasePersistence implements SlipStorage, TransactionRepository, 
     const result = await this.client.from("pending_slips").select("storage_ref,content_hash,extraction")
       .eq("id", uploadId).eq("line_user_id", userId).gt("expires_at", new Date().toISOString()).maybeSingle();
     if (result.error) {
-      this.logPending({ stage: "pending-get", reason: "database-error", hasExtraction: false, errorClass: errorClass(result.error) });
+      this.logPending({
+        stage: "pending-get",
+        reason: "database-error",
+        hasExtraction: false,
+        errorClass: errorClass(result.error),
+        ...serializeSupabaseError(result.error),
+      });
       throw new PendingSlipDatabaseError();
     }
     if (!result.data) {
@@ -280,6 +289,41 @@ function parseStoredExtraction(value: unknown): { extraction?: SlipExtraction; s
 function errorClass(error: unknown) {
   const name = error instanceof Error ? error.constructor.name : typeof error;
   return name.replace(/[^a-zA-Z0-9_$]/g, "?").slice(0, 64) || "UnknownError";
+}
+
+export function serializeSupabaseError(error: unknown): {
+  supabaseCode?: string;
+  httpStatus?: number;
+  errorMessage: string;
+} {
+  const candidate = isRecord(error) ? error : undefined;
+  const code = candidate?.code;
+  const status = candidate?.status ?? candidate?.statusCode ?? candidate?.status_code;
+  const message = candidate?.message ?? (error instanceof Error ? error.message : undefined);
+  const serialized: { supabaseCode?: string; httpStatus?: number; errorMessage: string } = {
+    errorMessage: sanitizeErrorMessage(typeof message === "string" ? message : "Unknown database error"),
+  };
+  if (typeof code === "string" && code.trim()) serialized.supabaseCode = code.trim().slice(0, 64);
+  const numericStatus = typeof status === "number" ? status : typeof status === "string" && /^\d{3}$/.test(status) ? Number(status) : undefined;
+  if (numericStatus !== undefined) serialized.httpStatus = numericStatus;
+  return serialized;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function sanitizeErrorMessage(message: string) {
+  return message
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/data:image\/[a-z0-9.+-]+;base64,[^\s"']+/gi, "[redacted-image-data]")
+    .replace(/\b(?:bearer|basic)\s+[^\s,;]+/gi, "[redacted-authorization]")
+    .replace(/\b(password|passwd|token|secret|api[_-]?key|apikey|authorization|credential|access[_-]?token|refresh[_-]?token)\s*[:=]\s*[^\s,;]+/gi, "$1=[redacted]")
+    .replace(/\beyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, "[redacted-token]")
+    .replace(/[a-z][a-z0-9+.-]*:\/\/[^\s"']+/gi, "[redacted-url]")
+    .replace(/\b[A-Za-z0-9+/]{80,}={0,2}\b/g, "[redacted-data]")
+    .trim()
+    .slice(0, 256);
 }
 
 export function createSupabasePersistence(env: NodeJS.ProcessEnv = process.env, logger?: PendingSlipLogger) {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { createSupabasePersistence, DummyPendingSlipStore, SignedPendingSlipStore } from "../src/services/persistence.js";
+import { createSupabasePersistence, DummyPendingSlipStore, serializeSupabaseError, SignedPendingSlipStore } from "../src/services/persistence.js";
 
 describe("persistence wiring", () => {
   it("previews pending extraction without consuming and consumes only once", async () => {
@@ -79,14 +79,42 @@ describe("persistence wiring", () => {
     const client = { from: vi.fn().mockReturnValue({
       select: vi.fn().mockReturnValue({
         eq: vi.fn().mockReturnThis(),
-        gt: vi.fn().mockReturnValue({ maybeSingle: vi.fn().mockResolvedValue({ data: null, error: { code: "secret-db-code", message: "password=secret" } }) }),
+        gt: vi.fn().mockReturnValue({ maybeSingle: vi.fn().mockResolvedValue({ data: null, error: {
+          code: "42P01",
+          status: 500,
+          message: "relation missing password=secret https://project.supabase.co/rest/v1/pending_slips?apikey=service-secret data:image/png;base64,iVBORw0KGgo=",
+        } }) }),
       }),
     }) } as unknown as SupabaseClient;
     const { SupabasePersistence, PendingSlipDatabaseError } = await import("../src/services/persistence.js");
 
     await expect(new SupabasePersistence(client, logger).getPending("user-a", "pending-id")).rejects.toBeInstanceOf(PendingSlipDatabaseError);
-    expect(logger.error).toHaveBeenCalledWith("Pending slip persistence diagnostic", { stage: "pending-get", reason: "database-error", hasExtraction: false, errorClass: "object" });
-    expect(JSON.stringify(logger.error.mock.calls)).not.toContain("secret");
+    expect(logger.error).toHaveBeenCalledWith("Pending slip persistence diagnostic", {
+      stage: "pending-get", reason: "database-error", hasExtraction: false,
+      errorClass: "object", supabaseCode: "42P01", httpStatus: 500,
+      errorMessage: expect.stringContaining("relation missing"),
+    });
+    const logged = JSON.stringify(logger.error.mock.calls);
+    expect(logged).not.toContain("password=secret");
+    expect(logged).not.toContain("https://project.supabase.co");
+    expect(logged).not.toContain("service-secret");
+    expect(logged).not.toContain("iVBORw0KGgo=");
+  });
+
+  it("serializes status variants and bounds diagnostic messages", () => {
+    const serialized = serializeSupabaseError({
+      code: "PGRST116",
+      statusCode: "502",
+      message: `Bearer very-secret-token password=super-secret https://example.test/${"a".repeat(400)}`,
+    });
+
+    expect(serialized.supabaseCode).toBe("PGRST116");
+    expect(serialized.httpStatus).toBe(502);
+    expect(serialized.errorMessage).toContain("[redacted-authorization]");
+    expect(serialized.errorMessage).toContain("password=[redacted]");
+    expect(serialized.errorMessage).not.toContain("very-secret-token");
+    expect(serialized.errorMessage).not.toContain("https://example.test");
+    expect(serialized.errorMessage.length).toBeLessThanOrEqual(256);
   });
 
   it("maps only transaction table columns and ignores extraction metadata such as bank", async () => {
