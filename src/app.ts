@@ -178,7 +178,7 @@ export function createApp(dependencies: AppDependencies = {}) {
     if (!transactionRepository.listTransactions) return response.status(503).json({ error: "ระบบประวัติรายการยังไม่พร้อมใช้งาน" });
     try {
       const result = await transactionRepository.listTransactions(userId, options);
-      return response.json({ ...result, page: options.page, page_size: options.pageSize, has_more: options.page * options.pageSize < result.total,
+      return response.json({ total: result.total, page: options.page, page_size: options.pageSize, has_more: options.page * options.pageSize < result.total,
         items: result.items.map(publicTransaction) });
     } catch {
       return response.status(503).json({ error: "ไม่สามารถโหลดประวัติรายการได้ กรุณาลองใหม่" });

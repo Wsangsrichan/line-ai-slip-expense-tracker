@@ -258,7 +258,7 @@ describe("Capture-to-Verify API", () => {
   it("lists only the authenticated user's transaction history with validated filters", async () => {
     const transactionRepository = {
       create: vi.fn(), listForDashboard: vi.fn().mockResolvedValue([]),
-      listTransactions: vi.fn().mockResolvedValue({ total: 1, items: [{
+      listTransactions: vi.fn().mockResolvedValue({ total: 1, internalCursor: "must-not-leak", items: [{
         id: "transaction-1", type: "expense", amount: "125.00", payee_payer: "ร้านค้า", category: "อาหาร",
         transaction_datetime: "2026-09-05T10:30:00+07:00", slip_image_url: "private/user-a/slip-1",
       }] }),
@@ -268,6 +268,7 @@ describe("Capture-to-Verify API", () => {
 
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({ page: 2, page_size: 5, total: 1, has_more: false });
+    expect(response.body).not.toHaveProperty("internalCursor");
     expect(response.body.items[0]).not.toHaveProperty("slip_image_url");
     expect(transactionRepository.listTransactions).toHaveBeenCalledWith("history-user", expect.objectContaining({ page: 2, pageSize: 5, type: "expense", search: "ร้านค้า" }));
   });

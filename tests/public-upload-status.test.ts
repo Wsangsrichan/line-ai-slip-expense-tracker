@@ -119,4 +119,9 @@ describe("upload status UI contract", () => {
     expect(page).toContain("await requireAuth()");
     expect(page).not.toContain("slip_image_url: 'https://");
   });
+
+  it("clears dashboard and history loading states when auth is unavailable", () => {
+    expect(page).toContain("const token = await requireAuth(); if (!token) { $('dashboard-loading').hidden = true;");
+    expect(page).toContain("const token = await requireAuth(); if (!token) { $('history-loading').hidden = true;");
+  });
 });
