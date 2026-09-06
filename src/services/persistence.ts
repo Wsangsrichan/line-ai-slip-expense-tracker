@@ -34,6 +34,8 @@ export interface PendingSlipDiagnostic {
   supabaseCode?: string;
   httpStatus?: number;
   errorMessage?: string;
+  userFingerprint?: string;
+  uploadFingerprint?: string;
 }
 
 export interface PendingSlipLogger {

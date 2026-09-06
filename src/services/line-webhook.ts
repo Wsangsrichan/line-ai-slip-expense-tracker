@@ -23,6 +23,7 @@ export interface LineWebhookDiagnostic {
 
 export interface LineWebhookLogger {
   error(message: string, diagnostic: LineWebhookDiagnostic): void;
+  info?(message: string, diagnostic: Record<string, string | number>): void;
 }
 
 export interface LineWebhookConfig {
@@ -110,6 +111,12 @@ export function createLineWebhookProcessor(
           messageId: event.message.id,
           extraction: extraction.data,
         });
+        try {
+          logger.info?.("LINE webhook pending slip created", {
+            userFingerprint: fingerprint(event.source.userId),
+            uploadFingerprint: fingerprint(uploadId),
+          });
+        } catch { /* diagnostics are best effort */ }
         if (event.replyToken) {
           stage = "reply";
           await config.messaging.reply(event.replyToken, createPendingReply(extraction.data, uploadId, config.liffUrl));
@@ -151,6 +158,10 @@ function sanitizeDiagnosticValue(value: string | undefined) {
   if (!value) return undefined;
   const sanitized = value.replace(/[^a-zA-Z0-9._:-]/g, "?").slice(0, 64);
   return sanitized || undefined;
+}
+
+function fingerprint(value: string) {
+  return createHash("sha256").update(value).digest("hex").slice(0, 12);
 }
 
 class SlipExtractionFailureError extends Error {

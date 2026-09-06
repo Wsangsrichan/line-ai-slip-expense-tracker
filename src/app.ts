@@ -128,7 +128,13 @@ export function createApp(dependencies: AppDependencies = {}) {
     try {
       const pendingSlip = await pendingSlips.getPending(userId, request.params.uploadId);
       if (!pendingSlip) {
-        logPendingDiagnostic(logger, { stage: "pending-get", reason: "not-found", hasExtraction: false });
+        logPendingDiagnostic(logger, {
+          stage: "pending-get",
+          reason: "not-found",
+          hasExtraction: false,
+          userFingerprint: fingerprint(userId),
+          uploadFingerprint: fingerprint(request.params.uploadId),
+        });
         return response.status(404).json({ error: "ไม่พบข้อมูลสลิป ลิงก์อาจหมดอายุหรือไม่ใช่ของผู้ใช้" });
       }
       if (!pendingSlip.extraction) {
@@ -199,6 +205,10 @@ function logPendingDiagnostic(logger: PendingSlipLogger, diagnostic: PendingSlip
 function errorClass(error: unknown) {
   const name = error instanceof Error ? error.constructor.name : typeof error;
   return name.replace(/[^a-zA-Z0-9_$]/g, "?").slice(0, 64) || "UnknownError";
+}
+
+function fingerprint(value: string) {
+  return createHash("sha256").update(value).digest("hex").slice(0, 12);
 }
 
 // Vercel detects src/app.ts as an Express entrypoint. Keep the app as a
