@@ -12,7 +12,10 @@ describe("Vercel pending slip route", () => {
     expect(response.body).toEqual({ error: "ต้องเข้าสู่ระบบ LINE ก่อนใช้งาน" });
   });
 
-  it("forwards the real UUID to the pending-slip handler", async () => {
+  it.each([
+    ["full pathname", (uploadId: string) => `/api/slips/pending/${uploadId}`],
+    ["function-relative pathname", (uploadId: string) => `/${uploadId}`],
+  ])("forwards the real UUID from a %s", async (_shape, pathFor) => {
     const uploadId = "550e8400-e29b-41d4-a716-446655440000";
     const getPending = vi.fn().mockResolvedValue({
       storageRef: "dummy://slips/user-a/image",
@@ -21,10 +24,10 @@ describe("Vercel pending slip route", () => {
     });
     const handler = createVercelHandler("/api/slips/pending/:uploadId", {
       pendingSlips: { getPending, createPending: vi.fn(), consume: vi.fn() },
-    });
+    } as never);
 
     const response = await request(handler)
-      .get(`/api/slips/pending/${uploadId}`)
+      .get(`${pathFor(uploadId)}?source=line`)
       .set("x-line-user-id", "user-a");
 
     expect(response.status).toBe(200);
