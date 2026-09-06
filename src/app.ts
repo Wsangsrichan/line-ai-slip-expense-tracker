@@ -7,8 +7,9 @@ import { createExtractor, extractSlip } from "./services/extraction.js";
 import { DummyIdentityVerifier, LineApiIdentityVerifier, getLineUserId } from "./services/identity.js";
 import { validateImageUpload } from "./services/upload.js";
 import { aggregateDashboard, getBangkokDateRangeBounds, getBangkokMonthBounds } from "./services/dashboard.js";
-import { createSupabasePersistence, DUPLICATE_SLIP_ERROR_CODE, DUPLICATE_SLIP_ERROR_MESSAGE, DummyPendingSlipStore, DummySlipStorage, DummyTransactionRepository, DummyWebhookEventStore, SignedPendingSlipStore, serializeSupabaseError, type PendingSlipDiagnostic, type PendingSlipLogger, type PendingSlipStore, type SlipStorage, type TransactionDiagnostic, type TransactionListOptions, type TransactionRepository, type TransactionRecord, type WebhookEventStore } from "./services/persistence.js";
+import { createSupabasePersistence, DUPLICATE_SLIP_ERROR_CODE, DUPLICATE_SLIP_ERROR_MESSAGE, DummyPendingSlipStore, DummySlipStorage, DummyTransactionRepository, DummyWebhookEventStore, SignedPendingSlipStore, serializeSupabaseError, type PendingSlipDiagnostic, type PendingSlipLogger, type PendingSlipStore, type SlipStorage, type TransactionDiagnostic, type TransactionRepository, type TransactionRecord, type WebhookEventStore } from "./services/persistence.js";
 import { createLineWebhookProcessor, LineContentApiClient, LineMessagingApiClient, verifyLineSignature, type LineContentClient, type LineMessagingClient, type LineWebhookLogger } from "./services/line-webhook.js";
+import { EXPORT_ROW_LIMIT, parseExportOptions, parseTransactionListOptions, serializeTransactionsCsv, serializeTransactionsXlsx } from "./services/export.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -185,6 +186,31 @@ export function createApp(dependencies: AppDependencies = {}) {
     }
   });
 
+  app.get("/api/transactions/export", async (request, response) => {
+    const userId = await getLineUserId(identityVerifier, {
+      token: request.headers.authorization,
+      dummyUserId: request.headers["x-line-user-id"] as string | undefined,
+    });
+    if (!userId) return response.status(401).json({ error: "ต้องเข้าสู่ระบบ LINE ก่อนใช้งาน" });
+    const exportRequest = parseExportOptions(request.query);
+    if (!exportRequest) return response.status(400).json({ error: "รูปแบบไฟล์หรือตัวกรองไม่ถูกต้อง" });
+    if (!transactionRepository.listTransactions) return response.status(503).json({ error: "ระบบส่งออกยังไม่พร้อมใช้งาน" });
+    try {
+      const result = await transactionRepository.listTransactions(userId, exportRequest.options);
+      if (result.total > EXPORT_ROW_LIMIT) return response.status(413).json({ error: "ข้อมูลมีจำนวนมากเกินไป กรุณากรองช่วงวันที่หรือหมวดหมู่ให้แคบลง" });
+      if (exportRequest.format === "csv") {
+        response.type("text/csv; charset=utf-8");
+        response.setHeader("Content-Disposition", 'attachment; filename="transactions.csv"');
+        return response.send(serializeTransactionsCsv(result.items));
+      }
+      response.type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      response.setHeader("Content-Disposition", 'attachment; filename="transactions.xlsx"');
+      return response.send(await serializeTransactionsXlsx(result.items));
+    } catch {
+      return response.status(503).json({ error: "ไม่สามารถส่งออกประวัติรายการได้ กรุณาลองใหม่" });
+    }
+  });
+
   app.get("/api/transactions/:transactionId", async (request, response) => {
     const userId = await getLineUserId(identityVerifier, {
       token: request.headers.authorization,
@@ -293,34 +319,6 @@ function getRequestedDashboardBounds(query: Record<string, unknown>, now: Date) 
   if (!start && !end) return getBangkokMonthBounds(now);
   if (!start || !end) return null;
   return getBangkokDateRangeBounds(start, end);
-}
-
-function parseTransactionListOptions(query: Record<string, unknown>): TransactionListOptions | null {
-  const page = parsePositiveInteger(queryString(query.page) ?? "1");
-  const pageSize = parsePositiveInteger(queryString(query.page_size) ?? "10");
-  if (!page || !pageSize || pageSize > 50) return null;
-  const type = queryString(query.type);
-  if (type && type !== "income" && type !== "expense") return null;
-  const search = queryString(query.q);
-  const category = queryString(query.category);
-  const start = queryString(query.start);
-  const end = queryString(query.end);
-  const sort = queryString(query.sort);
-  if (sort && sort !== "newest" && sort !== "oldest") return null;
-  const range = start || end ? start && end ? getBangkokDateRangeBounds(start, end) : null : null;
-  if ((start || end) && !range) return null;
-  return {
-    page, pageSize, ...(search ? { search: search.slice(0, 100) } : {}),
-    ...(type ? { type: type as "income" | "expense" } : {}), ...(category ? { category: category.slice(0, 100) } : {}),
-    ...(range ? { start: range.current.start, end: range.current.end } : {}),
-    ...(sort ? { sort: sort as "newest" | "oldest" } : {}),
-  };
-}
-
-function parsePositiveInteger(value: string) {
-  if (!/^\d+$/.test(value)) return null;
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
 function queryString(value: unknown) {

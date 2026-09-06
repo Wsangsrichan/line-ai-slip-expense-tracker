@@ -120,6 +120,17 @@ describe("upload status UI contract", () => {
     expect(page).not.toContain("slip_image_url: 'https://");
   });
 
+  it("provides authenticated CSV/XLSX exports using the active history filters", () => {
+    expect(page).toContain('id="export-csv"');
+    expect(page).toContain('id="export-xlsx"');
+    expect(page).toContain("/api/transactions/export?");
+    expect(page).toContain("await response.blob()");
+    expect(page).toContain("headers: authHeaders(token)");
+    expect(page).toContain("q: $('history-search').value");
+    expect(page).toContain("$('history').append($('export-actions'))");
+    expect(page).not.toContain("token=");
+  });
+
   it("clears dashboard and history loading states when auth is unavailable", () => {
     expect(page).toContain("const token = await requireAuth(); if (!token) { $('dashboard-loading').hidden = true;");
     expect(page).toContain("const token = await requireAuth(); if (!token) { $('history-loading').hidden = true;");

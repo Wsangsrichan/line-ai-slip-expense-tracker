@@ -8,12 +8,14 @@
     "build": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "setup:rich-menu": "tsx scripts/setup-rich-menu.ts",
     "start": "tsx src/server.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.0",
     "express": "^5.1.0",
     "multer": "^2.0.2",
+    "xlsx": "^0.18.5",
     "zod": "^4.1.5"
   },
   "devDependencies": {

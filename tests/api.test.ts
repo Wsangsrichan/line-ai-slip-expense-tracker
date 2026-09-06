@@ -335,6 +335,36 @@ describe("Capture-to-Verify API", () => {
     expect(response.body.data.recent).toEqual([]);
   });
 
+  it("exports only the authenticated user's filtered transactions as CSV or XLSX", async () => {
+    const transactionRepository = {
+      create: vi.fn(), listForDashboard: vi.fn().mockResolvedValue([]), getTransaction: vi.fn(),
+      listTransactions: vi.fn().mockResolvedValue({ total: 1, items: [{
+        id: "transaction-1", type: "expense", amount: 125, payee_payer: "ร้านค้า", category: "อาหาร",
+        transaction_datetime: "2026-09-05T10:30:00+07:00", slip_image_url: "private/user-a/slip.png",
+      }] }),
+    };
+    const app = createApp({ transactionRepository });
+    const csv = await request(app).get("/api/transactions/export?format=csv&type=expense&start=2026-09-01&end=2026-09-30")
+      .set("x-line-user-id", "export-user");
+
+    expect(csv.status).toBe(200);
+    expect(csv.headers["content-type"]).toContain("text/csv");
+    expect(csv.text).toContain("ร้านค้า");
+    expect(csv.text).not.toContain("private/user-a/slip.png");
+    expect(transactionRepository.listTransactions).toHaveBeenCalledWith("export-user", expect.objectContaining({ page: 1, pageSize: 10_000, type: "expense" }));
+
+    const xlsx = await request(app).get("/api/transactions/export?format=xlsx").set("x-line-user-id", "export-user");
+    expect(xlsx.status).toBe(200);
+    expect(xlsx.headers["content-type"]).toContain("spreadsheetml.sheet");
+    expect(xlsx.headers["content-disposition"]).toContain("transactions.xlsx");
+  });
+
+  it("rejects oversized exports instead of returning a truncated file", async () => {
+    const transactionRepository = { create: vi.fn(), listForDashboard: vi.fn().mockResolvedValue([]), listTransactions: vi.fn().mockResolvedValue({ total: 10_001, items: [] }) };
+    const response = await request(createApp({ transactionRepository })).get("/api/transactions/export?format=csv").set("x-line-user-id", "export-user");
+    expect(response.status).toBe(413);
+  });
+
   it("attempts a post-save LINE Flex summary without rolling back a durable transaction", async () => {
     const logger = { error: vi.fn() };
     const pendingSlips = new DummyPendingSlipStore();
