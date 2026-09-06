@@ -33,6 +33,8 @@ describe("LINE Rich Menu", () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(JSON.stringify(fetchMock.mock.calls.slice(1).map((call) => call[1]?.body ?? null))).not.toContain("server-access-token");
     expect(fetchMock.mock.calls[2][1].headers.Authorization).toBe("Bearer server-access-token");
+    expect(fetchMock.mock.calls[2][0]).toBe("https://api-data.line.me/v2/bot/richmenu/richmenu-id/content");
+    expect(fetchMock.mock.calls[0][0]).toBe("https://api.line.me/v2/bot/richmenu/list");
   });
 
   it("reuses a menu with the stable name instead of creating duplicates", async () => {

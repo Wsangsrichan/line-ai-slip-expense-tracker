@@ -1,4 +1,5 @@
 const LINE_API_BASE = "https://api.line.me";
+const LINE_CONTENT_API_BASE = "https://api-data.line.me";
 
 export interface RichMenuAction {
   type: "uri";
@@ -48,6 +49,7 @@ export class LineRichMenuClient {
     private readonly accessToken: string,
     private readonly fetcher: typeof fetch = fetch,
     private readonly baseUrl = LINE_API_BASE,
+    private readonly contentBaseUrl = LINE_CONTENT_API_BASE,
   ) {}
 
   async ensureDefault(definition: RichMenuDefinition, image: Buffer, imageType: "image/png" | "image/jpeg") {
@@ -80,15 +82,15 @@ export class LineRichMenuClient {
       method: "POST",
       headers: { "content-type": imageType },
       body: new Uint8Array(image),
-    }, "content");
+    }, "content", this.contentBaseUrl);
   }
 
   private async setDefault(richMenuId: string) {
     await this.request(`/v2/bot/user/all/richmenu/${encodeURIComponent(richMenuId)}`, { method: "POST" });
   }
 
-  private async request(path: string, init: RequestInit = {}, mode: "json" | "content" = "json") {
-    const response = await this.fetcher(`${this.baseUrl}${path}`, {
+  private async request(path: string, init: RequestInit = {}, mode: "json" | "content" = "json", baseUrl = this.baseUrl) {
+    const response = await this.fetcher(`${baseUrl}${path}`, {
       ...init,
       headers: { Authorization: `Bearer ${this.accessToken}`, ...(init.headers ?? {}) },
     });
