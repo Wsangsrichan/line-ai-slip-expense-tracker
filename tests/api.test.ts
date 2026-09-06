@@ -217,9 +217,9 @@ describe("Capture-to-Verify API", () => {
     const response = await request(app).post("/api/transactions").set("x-line-user-id", "diagnostic-user").send(body);
 
     expect(response.status).toBe(503);
-    expect(logger.error).toHaveBeenCalledWith("Transaction persistence diagnostic", {
+    expect(logger.error).toHaveBeenCalledWith("Transaction persistence diagnostic", expect.objectContaining({
       stage: "transaction-create", reason: "database-error", errorClass: "Error", supabaseCode: "42703", httpStatus: 500,
-    });
+    }));
     const diagnostics = JSON.stringify(logger.error.mock.calls);
     expect(diagnostics).not.toContain("diagnostic-user");
     expect(diagnostics).not.toContain(uploadId);
@@ -248,11 +248,48 @@ describe("Capture-to-Verify API", () => {
     });
 
     expect(response.status).toBe(201);
-    expect(logger.error).toHaveBeenCalledWith("Transaction persistence diagnostic", {
+    expect(logger.error).toHaveBeenCalledWith("Transaction persistence diagnostic", expect.objectContaining({
       stage: "transaction-consume", reason: "cleanup-error", errorClass: "Error", supabaseCode: "XX000", httpStatus: 503,
-    });
+    }));
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain("cleanup-user");
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain("cleanup secret");
+  });
+
+  it("returns a safe service error when pending lookup fails in the save flow", async () => {
+    const logger = { error: vi.fn(), info: vi.fn() };
+    const pendingSlips = { getPending: vi.fn().mockRejectedValue(Object.assign(new Error("database password=secret"), { code: "42P01", status: 503 })), createPending: vi.fn(), consume: vi.fn() } as never;
+    const transactionRepository = { create: vi.fn(), listForDashboard: vi.fn().mockResolvedValue([]) };
+    const response = await request(createApp({ pendingSlips, transactionRepository, logger })).post("/api/transactions")
+      .set("x-line-user-id", "lookup-user").send({ type: "expense", amount: 10, payee_payer: "ร้านค้า", category: "อาหาร", transaction_datetime: "2026-09-05T10:30:00+07:00", upload_id: "upload-id" });
+
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ error: "ไม่สามารถตรวจสอบข้อมูลสลิปได้ กรุณาลองใหม่" });
+    expect(transactionRepository.create).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith("Transaction persistence diagnostic", expect.objectContaining({ stage: "pending-lookup", reason: "database-error", supabaseCode: "42P01", httpStatus: 503 }));
+    const diagnostics = JSON.stringify(logger.error.mock.calls);
+    expect(diagnostics).not.toContain("lookup-user");
+    expect(diagnostics).not.toContain("upload-id");
+    expect(diagnostics).not.toContain("secret");
+  });
+
+  it("emits fingerprint-only save breadcrumbs across pending, create, consume, and summary", async () => {
+    const logger = { error: vi.fn(), info: vi.fn() };
+    const pendingSlips = new DummyPendingSlipStore();
+    const uploadId = await pendingSlips.createPending("breadcrumb-user", "slip", "hash", { extraction: { type: "expense", amount: 10, payee_payer: "ร้านค้า", category: "อาหาร", transaction_datetime: "2026-09-05T10:30:00+07:00" } });
+    const transactionRepository = { create: vi.fn().mockResolvedValue({ id: "transaction-id" }), listForDashboard: vi.fn().mockResolvedValue([]) };
+    const push = vi.fn().mockResolvedValue(undefined);
+    const response = await request(createApp({ pendingSlips, transactionRepository, logger, line: { channelSecret: "channel-secret", content: { download: vi.fn() }, messaging: { reply: vi.fn(), push } } })).post("/api/transactions")
+      .set("x-line-user-id", "breadcrumb-user").send({ type: "expense", amount: 10, payee_payer: "ร้านค้า", category: "อาหาร", transaction_datetime: "2026-09-05T10:30:00+07:00", upload_id: uploadId });
+
+    expect(response.status).toBe(201);
+    expect(logger.info).toHaveBeenCalledWith("Transaction persistence diagnostic", expect.objectContaining({ stage: "pending-lookup", reason: "found" }));
+    expect(logger.info).toHaveBeenCalledWith("Transaction persistence diagnostic", expect.objectContaining({ stage: "transaction-create", reason: "created", transactionFingerprint: expect.stringMatching(/^[a-f0-9]{12}$/) }));
+    expect(logger.info).toHaveBeenCalledWith("Transaction persistence diagnostic", expect.objectContaining({ stage: "transaction-consume", reason: "consumed" }));
+    expect(logger.info).toHaveBeenCalledWith("Transaction persistence diagnostic", expect.objectContaining({ stage: "line-summary", reason: "summary-sent" }));
+    const diagnostics = JSON.stringify(logger.info.mock.calls);
+    expect(diagnostics).not.toContain("breadcrumb-user");
+    expect(diagnostics).not.toContain(uploadId);
+    expect(diagnostics).not.toContain("channel-secret");
   });
 
   it("lists only the authenticated user's transaction history with validated filters", async () => {

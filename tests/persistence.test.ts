@@ -74,6 +74,26 @@ describe("persistence wiring", () => {
     expect(logger.error).toHaveBeenNthCalledWith(2, "Pending slip persistence diagnostic", { stage: "pending-get", reason: "schema-invalid", hasExtraction: false });
   });
 
+  it("logs a normal pending hit at info level instead of error", async () => {
+    const logger = { error: vi.fn(), info: vi.fn() };
+    const client = { from: vi.fn().mockReturnValue({
+      select: vi.fn().mockReturnValue({
+        eq: vi.fn().mockReturnThis(),
+        gt: vi.fn().mockReturnValue({ maybeSingle: vi.fn().mockResolvedValue({ data: {
+          storage_ref: "slip", content_hash: "hash", extraction: {
+            type: "expense", amount: 10, payee_payer: "ร้านค้า", category: "อาหาร", transaction_datetime: "2026-09-05T10:30:00+07:00",
+          },
+        }, error: null }) }),
+      }),
+    }) } as unknown as SupabaseClient;
+    const { SupabasePersistence } = await import("../src/services/persistence.js");
+
+    await new SupabasePersistence(client, logger).getPending("user-a", "pending-id");
+
+    expect(logger.info).toHaveBeenCalledWith("Pending slip persistence diagnostic", { stage: "pending-get", reason: "found", hasExtraction: true });
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
   it("converts Supabase query errors into a safe database error", async () => {
     const logger = { error: vi.fn() };
     const client = { from: vi.fn().mockReturnValue({

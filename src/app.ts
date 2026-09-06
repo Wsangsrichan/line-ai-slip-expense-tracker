@@ -215,8 +215,23 @@ export function createApp(dependencies: AppDependencies = {}) {
       return response.status(422).json({ error: "กรุณาอัปโหลดภาพสลิปก่อนบันทึก" });
     }
     if (!pendingSlips) return response.status(503).json({ error: "ระบบยังไม่ได้ตั้งค่า durable upload storage" });
-    const pendingSlip = await pendingSlips.getPending(userId, request.body.upload_id);
-    if (!pendingSlip) return response.status(404).json({ error: "ไม่พบภาพสลิปหรือภาพนี้ไม่ใช่ของผู้ใช้" });
+    const transactionContext = {
+      userFingerprint: fingerprint(userId),
+      uploadFingerprint: fingerprint(request.body.upload_id),
+    };
+    logTransactionDiagnostic(logger, { stage: "transaction-create", reason: "started", ...transactionContext });
+    let pendingSlip;
+    try {
+      pendingSlip = await pendingSlips.getPending(userId, request.body.upload_id);
+    } catch (error) {
+      logTransactionDiagnostic(logger, { stage: "pending-lookup", reason: "database-error", ...transactionContext, ...safeDatabaseDiagnostic(error) });
+      return response.status(503).json({ error: "ไม่สามารถตรวจสอบข้อมูลสลิปได้ กรุณาลองใหม่" });
+    }
+    if (!pendingSlip) {
+      logTransactionDiagnostic(logger, { stage: "pending-lookup", reason: "not-found", ...transactionContext });
+      return response.status(404).json({ error: "ไม่พบภาพสลิปหรือภาพนี้ไม่ใช่ของผู้ใช้" });
+    }
+    logTransactionDiagnostic(logger, { stage: "pending-lookup", reason: "found", ...transactionContext });
     let transaction: { id: string };
     try {
       transaction = await transactionRepository.create(userId, {
@@ -226,24 +241,29 @@ export function createApp(dependencies: AppDependencies = {}) {
       });
     } catch (error) {
       if ((error as { code?: string }).code === DUPLICATE_SLIP_ERROR_CODE) {
-        logTransactionDiagnostic(logger, { stage: "transaction-create", reason: "duplicate", ...safeDatabaseDiagnostic(error) });
+        logTransactionDiagnostic(logger, { stage: "transaction-create", reason: "duplicate", ...transactionContext, ...safeDatabaseDiagnostic(error) });
         return response.status(409).json({ error: DUPLICATE_SLIP_ERROR_MESSAGE });
       }
-      logTransactionDiagnostic(logger, { stage: "transaction-create", reason: "database-error", ...safeDatabaseDiagnostic(error) });
+      logTransactionDiagnostic(logger, { stage: "transaction-create", reason: "database-error", ...transactionContext, ...safeDatabaseDiagnostic(error) });
       return response.status(503).json({ error: "ไม่สามารถบันทึกรายการได้ กรุณาลองใหม่" });
     }
+    const transactionContextWithId = { ...transactionContext, transactionFingerprint: fingerprint(transaction.id) };
+    logTransactionDiagnostic(logger, { stage: "transaction-create", reason: "created", ...transactionContextWithId });
     try {
       const consumed = await pendingSlips.consume(userId, request.body.upload_id);
-      if (!consumed) logTransactionDiagnostic(logger, { stage: "transaction-consume", reason: "cleanup-not-found" });
+      if (!consumed) logTransactionDiagnostic(logger, { stage: "transaction-consume", reason: "cleanup-not-found", ...transactionContextWithId });
+      else logTransactionDiagnostic(logger, { stage: "transaction-consume", reason: "consumed", ...transactionContextWithId });
     } catch (error) {
       // The transaction is already durable. Report success and let cleanup be retried/observed separately.
-      logTransactionDiagnostic(logger, { stage: "transaction-consume", reason: "cleanup-error", ...safeDatabaseDiagnostic(error) });
+      logTransactionDiagnostic(logger, { stage: "transaction-consume", reason: "cleanup-error", ...transactionContextWithId, ...safeDatabaseDiagnostic(error) });
     }
     if (lineConfig?.messaging.push) {
+      logTransactionDiagnostic(logger, { stage: "line-summary", reason: "started", ...transactionContextWithId });
       try {
         await lineConfig.messaging.push(userId, createTransactionSummary(result.data));
+        logTransactionDiagnostic(logger, { stage: "line-summary", reason: "summary-sent", ...transactionContextWithId });
       } catch (error) {
-        logTransactionDiagnostic(logger, { stage: "line-summary", reason: "line-send-failed", ...safeDatabaseDiagnostic(error) });
+        logTransactionDiagnostic(logger, { stage: "line-summary", reason: "line-send-failed", ...transactionContextWithId, ...safeDatabaseDiagnostic(error) });
       }
     }
     return response.status(201).json({ saved: true, transaction });
@@ -253,11 +273,18 @@ export function createApp(dependencies: AppDependencies = {}) {
 }
 
 function logPendingDiagnostic(logger: PendingSlipLogger, diagnostic: PendingSlipDiagnostic) {
-  try { logger.error("Pending slip GET diagnostic", diagnostic); } catch { /* diagnostics are best effort */ }
+  try {
+    if (diagnostic.reason === "found" || diagnostic.reason === "not-found") logger.info?.("Pending slip GET diagnostic", diagnostic);
+    else logger.error("Pending slip GET diagnostic", diagnostic);
+  } catch { /* diagnostics are best effort */ }
 }
 
 function logTransactionDiagnostic(logger: PendingSlipLogger, diagnostic: TransactionDiagnostic) {
-  try { logger.error("Transaction persistence diagnostic", diagnostic); } catch { /* diagnostics are best effort */ }
+  try {
+    const failureReasons = new Set(["database-error", "duplicate", "cleanup-error", "line-send-failed"]);
+    if (failureReasons.has(diagnostic.reason)) logger.error("Transaction persistence diagnostic", diagnostic);
+    else logger.info?.("Transaction persistence diagnostic", diagnostic);
+  } catch { /* diagnostics are best effort */ }
 }
 
 function getRequestedDashboardBounds(query: Record<string, unknown>, now: Date) {

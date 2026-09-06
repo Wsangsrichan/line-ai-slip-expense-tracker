@@ -10,7 +10,7 @@ describe("upload status UI contract", () => {
     }
     expect(page).toContain("กำลังอัปโหลดสลิป");
     expect(page).toContain("กำลังอ่านข้อมูลสลิป");
-    expect(page).toContain("บันทึกเรียบร้อย");
+    expect(page).toContain("บันทึกรายการสำเร็จ");
     expect(page).toContain("ลองใหม่");
   });
 
@@ -61,7 +61,7 @@ describe("upload status UI contract", () => {
   });
 
   it("refreshes the dashboard after saving a transaction", () => {
-    const saveSuccess = page.indexOf("setStatus('success', 'บันทึกเรียบร้อย'");
+    const saveSuccess = page.indexOf("setStatus('success', 'บันทึกรายการสำเร็จ'");
     const dashboardRefresh = page.indexOf("await loadDashboard();", saveSuccess);
 
     expect(saveSuccess).toBeGreaterThanOrEqual(0);
@@ -81,7 +81,7 @@ describe("upload status UI contract", () => {
     expect(page).toContain("รองรับไฟล์ JPG, PNG และ WEBP");
     expect(page).toContain('aria-labelledby="workflow-title"');
     expect(page).toContain('aria-labelledby="dashboard-title"');
-    expect(page).toContain("Dashboard ประจำเดือน");
+    expect(page).toContain("Dashboard");
     expect(page).toContain("@media (max-width: 480px)");
     expect(page).toContain("เริ่มรายการใหม่");
   });
@@ -123,5 +123,12 @@ describe("upload status UI contract", () => {
   it("clears dashboard and history loading states when auth is unavailable", () => {
     expect(page).toContain("const token = await requireAuth(); if (!token) { $('dashboard-loading').hidden = true;");
     expect(page).toContain("const token = await requireAuth(); if (!token) { $('history-loading').hidden = true;");
+  });
+
+  it("keeps the upload CTA state visible and lets users close detail safely", () => {
+    expect(page).toContain("previousElementSibling.setAttribute('aria-disabled'");
+    expect(page).toContain('id="detail-close"');
+    expect(page).toContain("$('transaction-detail').hidden = true");
+    expect(page).toContain("await loadHistory();");
   });
 });

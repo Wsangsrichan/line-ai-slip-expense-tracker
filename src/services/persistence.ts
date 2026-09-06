@@ -60,14 +60,18 @@ export interface PendingSlipDiagnostic {
 
 export interface PendingSlipLogger {
   error(message: string, diagnostic: PendingSlipDiagnostic | TransactionDiagnostic): void;
+  info?(message: string, diagnostic: PendingSlipDiagnostic | TransactionDiagnostic): void;
 }
 
 export interface TransactionDiagnostic {
-  stage: "transaction-create" | "transaction-consume" | "line-summary";
-  reason: "database-error" | "duplicate" | "cleanup-not-found" | "cleanup-error" | "line-send-failed";
+  stage: "pending-lookup" | "transaction-create" | "transaction-consume" | "line-summary";
+  reason: "started" | "found" | "not-found" | "created" | "consumed" | "summary-sent" | "database-error" | "duplicate" | "cleanup-not-found" | "cleanup-error" | "line-send-failed";
   errorClass?: string;
   supabaseCode?: string;
   httpStatus?: number;
+  userFingerprint?: string;
+  uploadFingerprint?: string;
+  transactionFingerprint?: string;
 }
 
 export class PendingSlipDatabaseError extends Error {
@@ -340,7 +344,10 @@ export class SupabasePersistence implements SlipStorage, TransactionRepository, 
   }
 
   private logPending(diagnostic: PendingSlipDiagnostic) {
-    try { this.logger?.error("Pending slip persistence diagnostic", diagnostic); } catch { /* diagnostics are best effort */ }
+    try {
+      if (diagnostic.reason === "found" || diagnostic.reason === "not-found") this.logger?.info?.("Pending slip persistence diagnostic", diagnostic);
+      else this.logger?.error("Pending slip persistence diagnostic", diagnostic);
+    } catch { /* diagnostics are best effort */ }
   }
 }
 
