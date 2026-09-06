@@ -13,6 +13,7 @@ export interface DashboardTransaction {
 }
 
 export interface MonthBounds { start: Date; end: Date; label: string; }
+export interface DashboardBounds { current: MonthBounds; previous: MonthBounds; }
 
 function bangkokParts(date: Date) {
   const shifted = new Date(date.getTime() + bangkokOffsetMs);
@@ -32,14 +33,36 @@ export function getBangkokMonthBounds(now: Date): { current: MonthBounds; previo
   };
 }
 
+export function getBangkokDateRangeBounds(startDate: string, endDate: string): DashboardBounds | null {
+  const start = parseBangkokDate(startDate);
+  const endDay = parseBangkokDate(endDate);
+  if (!start || !endDay || endDay.getTime() < start.getTime()) return null;
+  const end = new Date(endDay.getTime() + 24 * 60 * 60 * 1000);
+  const duration = end.getTime() - start.getTime();
+  if (duration > 366 * 24 * 60 * 60 * 1000) return null;
+  const previousStart = new Date(start.getTime() - duration);
+  return {
+    current: { start, end, label: `${startDate} ถึง ${endDate}` },
+    previous: { start: previousStart, end: start, label: "ช่วงก่อนหน้า" },
+  };
+}
+
+function parseBangkokDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const [year, month, day] = value.split("-").map(Number);
+  const utc = Date.UTC(year, month - 1, day);
+  if (new Date(utc).getUTCFullYear() !== year || new Date(utc).getUTCMonth() !== month - 1 || new Date(utc).getUTCDate() !== day) return null;
+  return new Date(utc - bangkokOffsetMs);
+}
+
 function directionOf(transaction: DashboardTransaction) {
   return transaction.direction ?? transaction.type;
 }
 
 function amountOf(transaction: DashboardTransaction) { return Number(transaction.amount); }
 
-export function aggregateDashboard(transactions: DashboardTransaction[], now: Date) {
-  const { current, previous } = getBangkokMonthBounds(now);
+export function aggregateDashboard(transactions: DashboardTransaction[], now: Date, requestedBounds?: DashboardBounds) {
+  const { current, previous } = requestedBounds ?? getBangkokMonthBounds(now);
   const inPeriod = (transaction: DashboardTransaction, bounds: MonthBounds) => {
     const time = new Date(transaction.transaction_datetime).getTime();
     return time >= bounds.start.getTime() && time < bounds.end.getTime();
@@ -87,11 +110,12 @@ export function aggregateDashboard(transactions: DashboardTransaction[], now: Da
     const previousValue = previousRows.length === 0 ? null : previousSummary[key as keyof typeof previousSummary] as number;
     return [key, { absolute: previousValue === null ? null : currentValue - previousValue, percentage: previousValue === null || previousValue === 0 ? null : ((currentValue - previousValue) / previousValue) * 100 }];
   }));
+  const recent = [...rows].sort((a, b) => new Date(b.transaction_datetime).getTime() - new Date(a.transaction_datetime).getTime()).slice(0, 5);
   return {
     period: { start: current.start.toISOString(), end: current.end.toISOString(), label: current.label },
     summary, comparison: { available: previousRows.length > 0, values: changes },
     daily: Array.from(daily, ([date, values]) => ({ date, ...values })).sort((a, b) => a.date.localeCompare(b.date)),
     categories: categories.map((category) => ({ category, amount: byCategory.get(category) ?? 0 })).filter((item) => item.amount > 0),
-    isEmpty: rows.length === 0, partial,
+    recent, isEmpty: rows.length === 0, partial,
   };
 }

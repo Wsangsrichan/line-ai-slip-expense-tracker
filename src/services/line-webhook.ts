@@ -9,13 +9,14 @@ export interface LineContentClient {
 
 export interface LineMessagingClient {
   reply(replyToken: string, message: Record<string, unknown>): Promise<void>;
+  push?(userId: string, message: Record<string, unknown>): Promise<void>;
 }
 
 export interface LineWebhookDiagnostic {
   stage: string;
-  eventId?: string;
-  messageId?: string;
-  userId?: string;
+  eventFingerprint?: string;
+  messageFingerprint?: string;
+  userFingerprint?: string;
   errorClass: SlipExtractionFailure["reason"];
   httpStatusClass?: SlipExtractionFailure["httpStatusClass"];
   httpStatusCode?: SlipExtractionFailure["httpStatusCode"];
@@ -73,6 +74,15 @@ export class LineMessagingApiClient implements LineMessagingClient {
       body: JSON.stringify({ replyToken, messages: [message] }),
     });
     if (!response.ok) throw new Error("LINE reply request failed");
+  }
+
+  async push(userId: string, message: Record<string, unknown>) {
+    const response = await fetch("https://api.line.me/v2/bot/message/push", {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.accessToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ to: userId, messages: [message] }),
+    });
+    if (!response.ok) throw new Error("LINE push API request failed");
   }
 }
 
@@ -144,9 +154,9 @@ function logDiagnostic(logger: LineWebhookLogger, message: string, stage: string
   try {
     logger.error(message, {
       stage: sanitizeDiagnosticValue(stage) ?? "unknown",
-      eventId: sanitizeDiagnosticValue(event.webhookEventId),
-      messageId: sanitizeDiagnosticValue(event.message?.id),
-      userId: sanitizeDiagnosticValue(event.source?.userId),
+      eventFingerprint: event.webhookEventId ? fingerprint(event.webhookEventId) : undefined,
+      messageFingerprint: event.message?.id ? fingerprint(event.message.id) : undefined,
+      userFingerprint: event.source?.userId ? fingerprint(event.source.userId) : undefined,
       ...diagnosticClassification(error),
     });
   } catch {

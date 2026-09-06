@@ -95,4 +95,28 @@ describe("upload status UI contract", () => {
     expect(page).toContain('id="dashboard-loading" class="loading-skeletons"');
     expect(page).toContain('id="dashboard-warning" class="status warning" role="alert" hidden');
   });
+
+  it("exposes dashboard range controls and recent items using the same API range", () => {
+    expect(page).toContain('id="dashboard-range"');
+    expect(page).toContain('id="dashboard-start" type="date"');
+    expect(page).toContain('id="dashboard-end" type="date"');
+    expect(page).toContain("new URLSearchParams({ start: $('dashboard-start').value, end: $('dashboard-end').value })");
+    expect(page).toContain("data.recent || []");
+    expect(page).toContain('id="recent-list"');
+  });
+
+  it("provides authenticated history/detail loading with pagination and signed image rendering", () => {
+    expect(page).toContain('id="history-filter"');
+    expect(page).toContain("fetch(`/api/transactions?${params}`");
+    expect(page).toContain('id="history-category"');
+    expect(page).toContain('id="history-sort"');
+    expect(page).toContain('id="history-start" type="date"');
+    expect(page).toContain('id="history-end" type="date"');
+    expect(page).toContain("fetch(`/api/transactions/${encodeURIComponent(transactionId)}`");
+    expect(page).toContain("history-prev");
+    expect(page).toContain("history-next");
+    expect(page).toContain('alt="ภาพสลิปต้นฉบับ"');
+    expect(page).toContain("await requireAuth()");
+    expect(page).not.toContain("slip_image_url: 'https://");
+  });
 });

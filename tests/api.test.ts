@@ -255,6 +255,64 @@ describe("Capture-to-Verify API", () => {
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain("cleanup secret");
   });
 
+  it("lists only the authenticated user's transaction history with validated filters", async () => {
+    const transactionRepository = {
+      create: vi.fn(), listForDashboard: vi.fn().mockResolvedValue([]),
+      listTransactions: vi.fn().mockResolvedValue({ total: 1, items: [{
+        id: "transaction-1", type: "expense", amount: "125.00", payee_payer: "ร้านค้า", category: "อาหาร",
+        transaction_datetime: "2026-09-05T10:30:00+07:00", slip_image_url: "private/user-a/slip-1",
+      }] }),
+    };
+    const response = await request(createApp({ transactionRepository })).get("/api/transactions?page=2&page_size=5&q=%E0%B8%A3%E0%B9%89%E0%B8%B2%E0%B8%99%E0%B8%84%E0%B9%89%E0%B8%B2&type=expense&start=2026-09-01&end=2026-09-30")
+      .set("x-line-user-id", "history-user");
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ page: 2, page_size: 5, total: 1, has_more: false });
+    expect(response.body.items[0]).not.toHaveProperty("slip_image_url");
+    expect(transactionRepository.listTransactions).toHaveBeenCalledWith("history-user", expect.objectContaining({ page: 2, pageSize: 5, type: "expense", search: "ร้านค้า" }));
+  });
+
+  it("returns a short-lived signed slip URL only after an ownership-scoped detail lookup", async () => {
+    const transactionRepository = {
+      create: vi.fn(), listForDashboard: vi.fn().mockResolvedValue([]), listTransactions: vi.fn(),
+      getTransaction: vi.fn().mockResolvedValue({ id: "transaction-1", type: "expense", amount: 125, payee_payer: "ร้านค้า", category: "อาหาร", transaction_datetime: "2026-09-05T10:30:00+07:00", slip_image_url: "private/user-a/slip-1" }),
+    };
+    const storage = { put: vi.fn(), createSignedUrl: vi.fn().mockResolvedValue("https://signed.example/slip?expires=300") };
+    const response = await request(createApp({ transactionRepository, storage })).get("/api/transactions/transaction-1").set("x-line-user-id", "history-user");
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.slip_image_url).toBe("https://signed.example/slip?expires=300");
+    expect(response.body.data).not.toHaveProperty("slip_content_sha256");
+    expect(transactionRepository.getTransaction).toHaveBeenCalledWith("history-user", "transaction-1");
+    expect(storage.createSignedUrl).toHaveBeenCalledWith("private/user-a/slip-1", 300);
+  });
+
+  it("uses the requested Bangkok date range for dashboard and recent items", async () => {
+    const transactionRepository = { create: vi.fn(), listForDashboard: vi.fn().mockResolvedValue([]) };
+    const response = await request(createApp({ transactionRepository })).get("/api/dashboard?start=2026-09-01&end=2026-09-07").set("x-line-user-id", "range-user");
+
+    expect(response.status).toBe(200);
+    expect(transactionRepository.listForDashboard).toHaveBeenCalledWith("range-user", new Date("2026-08-31T17:00:00.000Z"), new Date("2026-09-07T17:00:00.000Z"), new Date("2026-08-24T17:00:00.000Z"));
+    expect(response.body.data.period.label).toBe("2026-09-01 ถึง 2026-09-07");
+    expect(response.body.data.recent).toEqual([]);
+  });
+
+  it("attempts a post-save LINE Flex summary without rolling back a durable transaction", async () => {
+    const logger = { error: vi.fn() };
+    const pendingSlips = new DummyPendingSlipStore();
+    const uploadId = await pendingSlips.createPending("summary-user", "slip", "hash", { extraction: { type: "expense", amount: 10, payee_payer: "ร้านค้า", category: "อาหาร", transaction_datetime: "2026-09-05T10:30:00+07:00" } });
+    const transactionRepository = { create: vi.fn().mockResolvedValue({ id: "transaction-1" }), listForDashboard: vi.fn().mockResolvedValue([]) };
+    const push = vi.fn().mockRejectedValue(new Error("LINE provider secret"));
+    const response = await request(createApp({ pendingSlips, transactionRepository, logger, line: { channelSecret: "channel-secret", content: { download: vi.fn() }, messaging: { reply: vi.fn(), push } } })).post("/api/transactions")
+      .set("x-line-user-id", "summary-user").send({ type: "expense", amount: 10, payee_payer: "ร้านค้า", category: "อาหาร", transaction_datetime: "2026-09-05T10:30:00+07:00", upload_id: uploadId });
+
+    expect(response.status).toBe(201);
+    expect(push).toHaveBeenCalledWith("summary-user", expect.objectContaining({ type: "flex" }));
+    expect(logger.error).toHaveBeenCalledWith("Transaction persistence diagnostic", expect.objectContaining({ stage: "line-summary", reason: "line-send-failed", errorClass: "Error" }));
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain("summary-user");
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain("LINE provider secret");
+  });
+
   it("rejects the same image bytes for the same LINE user", async () => {
     const app = createApp();
     const image = Buffer.from("same-slip-bytes");

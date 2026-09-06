@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
@@ -67,6 +67,19 @@ describe("LINE webhook", () => {
     expect(fetchMock).toHaveBeenCalledWith("https://api.line.me/v2/bot/message/reply", expect.objectContaining({
       headers: { authorization: "Bearer access-token", "content-type": "application/json" },
       body: JSON.stringify({ replyToken: "reply-token", messages: [message] }),
+    }));
+  });
+
+  it("sends a post-save summary through LINE push without exposing the access token", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const message = { type: "flex", altText: "saved", contents: { type: "bubble" } };
+
+    await new LineMessagingApiClient("access-token").push("line-user", message);
+
+    expect(fetchMock).toHaveBeenCalledWith("https://api.line.me/v2/bot/message/push", expect.objectContaining({
+      headers: { authorization: "Bearer access-token", "content-type": "application/json" },
+      body: JSON.stringify({ to: "line-user", messages: [message] }),
     }));
   });
 
@@ -153,10 +166,11 @@ describe("LINE webhook", () => {
       type: "text", text: "ไม่สามารถประมวลผลสลิปได้ กรุณาลองใหม่",
     });
     expect(logger.error).toHaveBeenCalledWith("LINE webhook processing failed", {
-      stage, eventId: "evt-1", messageId: "message-1", userId: "line-user-1", errorClass: "unknown",
+      stage, eventFingerprint: fingerprintFor("evt-1"), messageFingerprint: fingerprintFor("message-1"), userFingerprint: fingerprintFor("line-user-1"), errorClass: "unknown",
     });
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain("secret");
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain("payload");
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain("line-user-1");
   });
 
   it.each([
@@ -184,7 +198,7 @@ describe("LINE webhook", () => {
     expect(response.body).toEqual({ accepted: true, processed: 0 });
     expect(messaging.reply).toHaveBeenCalledWith("reply-1", { type: "text", text: "ไม่สามารถประมวลผลสลิปได้ กรุณาลองใหม่" });
     expect(logger.error).toHaveBeenCalledWith("LINE webhook processing failed", {
-      stage: "extraction", eventId: "evt-1", messageId: "message-1", userId: "line-user-1",
+      stage: "extraction", eventFingerprint: fingerprintFor("evt-1"), messageFingerprint: fingerprintFor("message-1"), userFingerprint: fingerprintFor("line-user-1"),
       errorClass: "provider-error", httpStatusClass, httpStatusCode: status,
     });
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain(providerSecret);
@@ -262,4 +276,8 @@ describe("LINE webhook", () => {
 function signatureFor(body: unknown) {
   const raw = Buffer.from(JSON.stringify(body));
   return createHmac("sha256", "channel-secret").update(raw).digest("base64");
+}
+
+function fingerprintFor(value: string) {
+  return createHash("sha256").update(value).digest("hex").slice(0, 12);
 }

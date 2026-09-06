@@ -6,8 +6,8 @@ import { validateForSave } from "./domain/slip.js";
 import { createExtractor, extractSlip } from "./services/extraction.js";
 import { DummyIdentityVerifier, LineApiIdentityVerifier, getLineUserId } from "./services/identity.js";
 import { validateImageUpload } from "./services/upload.js";
-import { aggregateDashboard, getBangkokMonthBounds } from "./services/dashboard.js";
-import { createSupabasePersistence, DUPLICATE_SLIP_ERROR_CODE, DUPLICATE_SLIP_ERROR_MESSAGE, DummyPendingSlipStore, DummySlipStorage, DummyTransactionRepository, DummyWebhookEventStore, SignedPendingSlipStore, serializeSupabaseError, type PendingSlipDiagnostic, type PendingSlipLogger, type PendingSlipStore, type SlipStorage, type TransactionDiagnostic, type TransactionRepository, type WebhookEventStore } from "./services/persistence.js";
+import { aggregateDashboard, getBangkokDateRangeBounds, getBangkokMonthBounds } from "./services/dashboard.js";
+import { createSupabasePersistence, DUPLICATE_SLIP_ERROR_CODE, DUPLICATE_SLIP_ERROR_MESSAGE, DummyPendingSlipStore, DummySlipStorage, DummyTransactionRepository, DummyWebhookEventStore, SignedPendingSlipStore, serializeSupabaseError, type PendingSlipDiagnostic, type PendingSlipLogger, type PendingSlipStore, type SlipStorage, type TransactionDiagnostic, type TransactionListOptions, type TransactionRepository, type TransactionRecord, type WebhookEventStore } from "./services/persistence.js";
 import { createLineWebhookProcessor, LineContentApiClient, LineMessagingApiClient, verifyLineSignature, type LineContentClient, type LineMessagingClient, type LineWebhookLogger } from "./services/line-webhook.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -85,10 +85,12 @@ export function createApp(dependencies: AppDependencies = {}) {
     });
     if (!userId) return response.status(401).json({ error: "ต้องเข้าสู่ระบบ LINE ก่อนใช้งาน" });
     const now = new Date();
-    const bounds = getBangkokMonthBounds(now);
+    const requestedBounds = getRequestedDashboardBounds(request.query, now);
+    if (!requestedBounds) return response.status(400).json({ error: "ช่วงวันที่ไม่ถูกต้อง กรุณาเลือกวันที่ไม่เกิน 1 ปี" });
+    const bounds = requestedBounds;
     try {
       const transactions = await transactionRepository.listForDashboard(userId, bounds.current.start, bounds.current.end, bounds.previous.start);
-      return response.json({ state: "complete", data: aggregateDashboard(transactions, now) });
+      return response.json({ state: "complete", data: aggregateDashboard(transactions, now, bounds) });
     } catch {
       return response.status(503).json({ state: "recoverable-error", error: "ไม่สามารถโหลดข้อมูล Dashboard ได้ กรุณาลองใหม่" });
     }
@@ -165,6 +167,42 @@ export function createApp(dependencies: AppDependencies = {}) {
     return response.json({ valid: true, user_id: userId, data: result.data });
   });
 
+  app.get("/api/transactions", async (request, response) => {
+    const userId = await getLineUserId(identityVerifier, {
+      token: request.headers.authorization,
+      dummyUserId: request.headers["x-line-user-id"] as string | undefined,
+    });
+    if (!userId) return response.status(401).json({ error: "ต้องเข้าสู่ระบบ LINE ก่อนใช้งาน" });
+    const options = parseTransactionListOptions(request.query);
+    if (!options) return response.status(400).json({ error: "ตัวกรองประวัติรายการไม่ถูกต้อง" });
+    if (!transactionRepository.listTransactions) return response.status(503).json({ error: "ระบบประวัติรายการยังไม่พร้อมใช้งาน" });
+    try {
+      const result = await transactionRepository.listTransactions(userId, options);
+      return response.json({ ...result, page: options.page, page_size: options.pageSize, has_more: options.page * options.pageSize < result.total,
+        items: result.items.map(publicTransaction) });
+    } catch {
+      return response.status(503).json({ error: "ไม่สามารถโหลดประวัติรายการได้ กรุณาลองใหม่" });
+    }
+  });
+
+  app.get("/api/transactions/:transactionId", async (request, response) => {
+    const userId = await getLineUserId(identityVerifier, {
+      token: request.headers.authorization,
+      dummyUserId: request.headers["x-line-user-id"] as string | undefined,
+    });
+    if (!userId) return response.status(401).json({ error: "ต้องเข้าสู่ระบบ LINE ก่อนใช้งาน" });
+    if (!transactionRepository.getTransaction) return response.status(503).json({ error: "ระบบรายละเอียดรายการยังไม่พร้อมใช้งาน" });
+    try {
+      const transaction = await transactionRepository.getTransaction(userId, request.params.transactionId);
+      if (!transaction) return response.status(404).json({ error: "ไม่พบรายการหรือรายการนี้ไม่ใช่ของผู้ใช้" });
+      if (!storage?.createSignedUrl) return response.status(503).json({ error: "ระบบภาพสลิปยังไม่พร้อมใช้งาน" });
+      const slipImageUrl = await storage.createSignedUrl(transaction.slip_image_url, 300);
+      return response.json({ data: { ...publicTransaction(transaction), slip_image_url: slipImageUrl } });
+    } catch {
+      return response.status(503).json({ error: "ไม่สามารถโหลดรายละเอียดรายการได้ กรุณาลองใหม่" });
+    }
+  });
+
   app.post("/api/transactions", async (request, response) => {
     const userId = await getLineUserId(identityVerifier, {
       token: request.headers.authorization,
@@ -201,6 +239,13 @@ export function createApp(dependencies: AppDependencies = {}) {
       // The transaction is already durable. Report success and let cleanup be retried/observed separately.
       logTransactionDiagnostic(logger, { stage: "transaction-consume", reason: "cleanup-error", ...safeDatabaseDiagnostic(error) });
     }
+    if (lineConfig?.messaging.push) {
+      try {
+        await lineConfig.messaging.push(userId, createTransactionSummary(result.data));
+      } catch (error) {
+        logTransactionDiagnostic(logger, { stage: "line-summary", reason: "line-send-failed", ...safeDatabaseDiagnostic(error) });
+      }
+    }
     return response.status(201).json({ saved: true, transaction });
   });
 
@@ -213,6 +258,66 @@ function logPendingDiagnostic(logger: PendingSlipLogger, diagnostic: PendingSlip
 
 function logTransactionDiagnostic(logger: PendingSlipLogger, diagnostic: TransactionDiagnostic) {
   try { logger.error("Transaction persistence diagnostic", diagnostic); } catch { /* diagnostics are best effort */ }
+}
+
+function getRequestedDashboardBounds(query: Record<string, unknown>, now: Date) {
+  const start = queryString(query.start);
+  const end = queryString(query.end);
+  if (!start && !end) return getBangkokMonthBounds(now);
+  if (!start || !end) return null;
+  return getBangkokDateRangeBounds(start, end);
+}
+
+function parseTransactionListOptions(query: Record<string, unknown>): TransactionListOptions | null {
+  const page = parsePositiveInteger(queryString(query.page) ?? "1");
+  const pageSize = parsePositiveInteger(queryString(query.page_size) ?? "10");
+  if (!page || !pageSize || pageSize > 50) return null;
+  const type = queryString(query.type);
+  if (type && type !== "income" && type !== "expense") return null;
+  const search = queryString(query.q);
+  const category = queryString(query.category);
+  const start = queryString(query.start);
+  const end = queryString(query.end);
+  const sort = queryString(query.sort);
+  if (sort && sort !== "newest" && sort !== "oldest") return null;
+  const range = start || end ? start && end ? getBangkokDateRangeBounds(start, end) : null : null;
+  if ((start || end) && !range) return null;
+  return {
+    page, pageSize, ...(search ? { search: search.slice(0, 100) } : {}),
+    ...(type ? { type: type as "income" | "expense" } : {}), ...(category ? { category: category.slice(0, 100) } : {}),
+    ...(range ? { start: range.current.start, end: range.current.end } : {}),
+    ...(sort ? { sort: sort as "newest" | "oldest" } : {}),
+  };
+}
+
+function parsePositiveInteger(value: string) {
+  if (!/^\d+$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function queryString(value: unknown) {
+  return typeof value === "string" ? value : undefined;
+}
+
+function publicTransaction(transaction: TransactionRecord) {
+  const { slip_image_url: _slipImageUrl, ...safe } = transaction;
+  return safe;
+}
+
+function createTransactionSummary(data: { type: string; amount: number; payee_payer: string; category: string; transaction_datetime: string }) {
+  return {
+    type: "flex",
+    altText: `บันทึกรายการ ${data.amount} บาทเรียบร้อย`,
+    contents: {
+      type: "bubble",
+      body: { type: "box", layout: "vertical", contents: [
+        { type: "text", text: "บันทึกรายการสำเร็จ", weight: "bold", size: "lg" },
+        { type: "text", text: `${data.type === "income" ? "รายรับ" : "รายจ่าย"} ${data.amount} บาท`, wrap: true },
+        { type: "text", text: `${data.payee_payer} · ${data.category}`, wrap: true },
+      ] },
+    },
+  };
 }
 
 function safeDatabaseDiagnostic(error: unknown) {

@@ -8,11 +8,31 @@ export const DUPLICATE_SLIP_ERROR_MESSAGE = "สลิปภาพนี้ถ�
 
 export interface SlipStorage {
   put(userId: string, image: Buffer, contentType: string): Promise<string>;
+  createSignedUrl?(storageRef: string, expiresInSeconds: number): Promise<string>;
+}
+
+export interface TransactionRecord extends DashboardTransaction {
+  payee_payer: string;
+  slip_image_url: string;
+  created_at?: string;
+}
+
+export interface TransactionListOptions {
+  page: number;
+  pageSize: number;
+  search?: string;
+  type?: "income" | "expense";
+  category?: string;
+  start?: Date;
+  end?: Date;
+  sort?: "newest" | "oldest";
 }
 
 export interface TransactionRepository {
   create(userId: string, data: SlipExtraction & { slip_image_url: string; slip_content_sha256: string }): Promise<{ id: string }>;
   listForDashboard(userId: string, start: Date, end: Date, previousStart: Date): Promise<DashboardTransaction[]>;
+  listTransactions?(userId: string, options: TransactionListOptions): Promise<{ items: TransactionRecord[]; total: number }>;
+  getTransaction?(userId: string, transactionId: string): Promise<TransactionRecord | null>;
 }
 
 import type { DashboardTransaction } from "./dashboard.js";
@@ -43,8 +63,8 @@ export interface PendingSlipLogger {
 }
 
 export interface TransactionDiagnostic {
-  stage: "transaction-create" | "transaction-consume";
-  reason: "database-error" | "duplicate" | "cleanup-not-found" | "cleanup-error";
+  stage: "transaction-create" | "transaction-consume" | "line-summary";
+  reason: "database-error" | "duplicate" | "cleanup-not-found" | "cleanup-error" | "line-send-failed";
   errorClass?: string;
   supabaseCode?: string;
   httpStatus?: number;
@@ -77,6 +97,10 @@ export class DummySlipStorage implements SlipStorage {
   async put(userId: string, _image: Buffer, _contentType: string) {
     return `dummy://slips/${encodeURIComponent(userId)}/pending`;
   }
+
+  async createSignedUrl(storageRef: string, _expiresInSeconds: number) {
+    return storageRef;
+  }
 }
 
 export class DummyTransactionRepository implements TransactionRepository {
@@ -94,6 +118,10 @@ export class DummyTransactionRepository implements TransactionRepository {
   }
 
   async listForDashboard(_userId: string, _start: Date, _end: Date, _previousStart: Date) { return [] as DashboardTransaction[]; }
+
+  async listTransactions(_userId: string, _options: TransactionListOptions) { return { items: [] as TransactionRecord[], total: 0 }; }
+
+  async getTransaction(_userId: string, _transactionId: string) { return null; }
 }
 
 export class DummyPendingSlipStore implements PendingSlipStore {
@@ -191,6 +219,12 @@ export class SupabasePersistence implements SlipStorage, TransactionRepository, 
     return path;
   }
 
+  async createSignedUrl(storageRef: string, expiresInSeconds: number) {
+    const result = await this.client.storage.from("slips").createSignedUrl(storageRef, expiresInSeconds);
+    if (result.error || !result.data?.signedUrl) throw result.error ?? new Error("Signed slip URL unavailable");
+    return result.data.signedUrl;
+  }
+
   async create(userId: string, data: SlipExtraction & { slip_image_url: string; slip_content_sha256: string }) {
     const result = await this.client.from("transactions").insert({
       line_user_id: userId,
@@ -207,10 +241,31 @@ export class SupabasePersistence implements SlipStorage, TransactionRepository, 
   }
 
   async listForDashboard(userId: string, _start: Date, _end: Date, previousStart: Date) {
-    const result = await this.client.from("transactions").select("id,type,amount,category,transaction_datetime")
+    const result = await this.client.from("transactions").select("id,type,amount,category,payee_payer,transaction_datetime")
       .eq("line_user_id", userId).gte("transaction_datetime", previousStart.toISOString()).lt("transaction_datetime", _end.toISOString());
     if (result.error) throw result.error;
     return (result.data ?? []) as DashboardTransaction[];
+  }
+
+  async listTransactions(userId: string, options: TransactionListOptions) {
+    let query = this.client.from("transactions").select("id,type,amount,category,payee_payer,transaction_datetime,slip_image_url,created_at", { count: "exact" })
+      .eq("line_user_id", userId);
+    if (options.search) query = query.or(`payee_payer.ilike.%${escapeFilter(options.search)}%,category.ilike.%${escapeFilter(options.search)}%`);
+    if (options.type) query = query.eq("type", options.type);
+    if (options.category) query = query.eq("category", options.category);
+    if (options.start) query = query.gte("transaction_datetime", options.start.toISOString());
+    if (options.end) query = query.lt("transaction_datetime", options.end.toISOString());
+    const from = (options.page - 1) * options.pageSize;
+    const result = await query.order("transaction_datetime", { ascending: options.sort === "oldest" }).range(from, from + options.pageSize - 1);
+    if (result.error) throw result.error;
+    return { items: (result.data ?? []) as TransactionRecord[], total: result.count ?? (result.data ?? []).length };
+  }
+
+  async getTransaction(userId: string, transactionId: string) {
+    const result = await this.client.from("transactions").select("id,type,amount,category,payee_payer,transaction_datetime,slip_image_url,created_at")
+      .eq("line_user_id", userId).eq("id", transactionId).maybeSingle();
+    if (result.error) throw result.error;
+    return (result.data ?? null) as TransactionRecord | null;
   }
 
   async createPending(userId: string, storageRef: string, contentHash: string, metadata?: PendingSlipMetadata) {
@@ -287,6 +342,10 @@ export class SupabasePersistence implements SlipStorage, TransactionRepository, 
   private logPending(diagnostic: PendingSlipDiagnostic) {
     try { this.logger?.error("Pending slip persistence diagnostic", diagnostic); } catch { /* diagnostics are best effort */ }
   }
+}
+
+function escapeFilter(value: string) {
+  return value.replace(/[(),.%]/g, (character) => `\\${character}`).slice(0, 100);
 }
 
 function parseStoredExtraction(value: unknown): { extraction?: SlipExtraction; status: "valid" | "missing" | "invalid" } {

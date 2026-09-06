@@ -170,7 +170,7 @@ describe("persistence wiring", () => {
       new Date("2026-08-01T00:00:00+07:00"),
     );
 
-    expect(select).toHaveBeenCalledWith("id,type,amount,category,transaction_datetime");
+    expect(select).toHaveBeenCalledWith("id,type,amount,category,payee_payer,transaction_datetime");
   });
 
   it("stores pending slip metadata and claims webhook events durably", async () => {
